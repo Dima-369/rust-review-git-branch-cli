@@ -1,0 +1,276 @@
+use anyhow::{Result, bail};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::process::Command;
+
+use crate::cli::GitArgs;
+use crate::domain::ReviewData;
+use crate::fs::{
+    build_review_data, get_local_file_content, get_repo_root, run_command, FileContent,
+};
+
+pub fn extract_diff(args: &GitArgs) -> Result<ReviewData> {
+    let repo_root = get_repo_root(args.common.force_cwd)?;
+
+    log::debug!(
+        "Using repo root: {}{}",
+        repo_root.display(),
+        if args.common.force_cwd { " (forced via --force-cwd)" } else { "" }
+    );
+
+    let (changed_files, diffs, diff_target) = get_diff_strategy(args, &repo_root)?;
+    build_review_data(changed_files, diffs, diff_target, &args.common, repo_root)
+}
+
+fn get_diff_strategy(
+    args: &GitArgs,
+    repo_root: &std::path::Path,
+) -> Result<(Vec<String>, HashMap<String, String>, String)> {
+    let mut diffs = HashMap::new();
+    let context = args.common.context;
+
+    if args.head {
+        let has_head = head_exists(repo_root)?;
+
+        let mut files = if has_head {
+            get_git_changed_files(&["HEAD"], &args.common.paths, repo_root)?
+        } else {
+            get_staged_files(&args.common.paths, repo_root)?
+        };
+        let untracked = get_untracked_files(&args.common.paths, repo_root)?;
+
+        if files.is_empty() && untracked.is_empty() {
+            if has_head {
+                bail!("No uncommitted changes found");
+            } else {
+                bail!("No staged or untracked files found. Stage files with 'git add' first.");
+            }
+        }
+
+        let untracked_set: HashSet<String> = untracked.iter().cloned().collect();
+        files.extend(untracked);
+
+        for file in &files {
+            if untracked_set.contains(file) || !has_head {
+                let full_path = repo_root.join(file);
+                match get_local_file_content(&full_path)? {
+                    FileContent::Binary => {
+                        diffs.insert(file.clone(), "Binary file".to_string());
+                    }
+                    FileContent::Deleted => {
+                        diffs.insert(file.clone(), String::new());
+                    }
+                    FileContent::Content(_) => {
+                        let diff = get_no_index_new_file_diff(repo_root, file, context)?;
+                        diffs.insert(file.clone(), diff);
+                    }
+                }
+            } else {
+                let diff = get_git_diff(&["HEAD"], file, context, repo_root)?;
+                diffs.insert(file.clone(), diff);
+            }
+        }
+
+        Ok((files, diffs, "HEAD".to_string()))
+    } else {
+        let current_branch = get_current_git_branch(repo_root)?;
+
+        let target_branch = match args.branch.as_deref() {
+            None | Some("smart") => detect_smart_git_branch(&current_branch, repo_root)?,
+            Some(b) => b.to_string(),
+        };
+
+        let diff_target = if args.branch.is_none() {
+            format!("{target_branch} (smart)")
+        } else {
+            target_branch.clone()
+        };
+
+        if current_branch == target_branch {
+            bail!("Already on target branch '{target_branch}'. Nothing to compare.");
+        }
+
+        let branch_range = format!("{target_branch}...");
+        let files = get_git_changed_files(&[&branch_range], &args.common.paths, repo_root)?;
+        if files.is_empty() {
+            bail!("No changes found compared to '{target_branch}'");
+        }
+
+        for file in &files {
+            let diff = get_git_diff(&[branch_range.as_str()], file, context, repo_root)?;
+            diffs.insert(file.clone(), diff);
+        }
+
+        Ok((files, diffs, diff_target))
+    }
+}
+
+fn get_current_git_branch(repo_root: &std::path::Path) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["branch", "--show-current"]).current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        bail!("Failed to get current git branch. Are you in a git repository?");
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn head_exists(repo_root: &std::path::Path) -> Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--verify", "HEAD"]).current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    Ok(output.status.success())
+}
+
+fn detect_smart_git_branch(current_branch: &str, repo_root: &std::path::Path) -> Result<String> {
+    let candidates = ["develop", "master", "main"];
+    for candidate in candidates {
+        if current_branch == candidate {
+            continue;
+        }
+
+        let mut cmd = Command::new("git");
+        cmd.args(["rev-parse", "--verify", candidate]).current_dir(repo_root);
+        let output = run_command(&mut cmd)?;
+        if output.status.success() {
+            return Ok(candidate.to_string());
+        }
+    }
+    bail!(
+        "No suitable base branch found. Checked: {}",
+        candidates.join(", ")
+    );
+}
+
+fn get_staged_files(paths: &[String], repo_root: &std::path::Path) -> Result<Vec<String>> {
+    let mut args = vec!["diff", "--cached", "--name-only"];
+
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().map(String::as_str));
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        bail!(
+            "Failed to get staged files from git: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+fn get_untracked_files(paths: &[String], repo_root: &std::path::Path) -> Result<Vec<String>> {
+    let mut args = vec!["ls-files", "--others", "--exclude-standard", "--full-name"];
+
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().map(String::as_str));
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        bail!(
+            "Failed to get untracked files from git: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+fn get_git_changed_files(
+    revision_args: &[&str],
+    paths: &[String],
+    repo_root: &std::path::Path,
+) -> Result<Vec<String>> {
+    let mut args = vec!["diff", "--name-only"];
+    args.extend_from_slice(revision_args);
+
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().map(String::as_str));
+    }
+
+    let mut cmd = Command::new("git");
+    cmd.args(args).current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        bail!(
+            "Failed to get changed files from git: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+fn get_no_index_new_file_diff(
+    repo_root: &std::path::Path,
+    file: &str,
+    context: Option<u32>,
+) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+
+    if let Some(ctx) = context {
+        cmd.arg(format!("--unified={ctx}"));
+    }
+
+    cmd.args(["--no-index", "--", "/dev/null", file])
+        .current_dir(repo_root);
+
+    let output = run_command(&mut cmd)?;
+
+    if !(output.status.success() || output.status.code() == Some(1)) {
+        bail!(
+            "Failed to get diff for new file {}: {}",
+            file,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8(output.stdout)?)
+}
+
+fn get_git_diff(
+    revision_args: &[&str],
+    file_path: &str,
+    context: Option<u32>,
+    repo_root: &std::path::Path,
+) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("diff");
+    cmd.args(revision_args);
+
+    if let Some(ctx) = context {
+        cmd.arg(format!("--unified={ctx}"));
+    }
+
+    cmd.arg("--").arg(file_path).current_dir(repo_root);
+
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        bail!(
+            "Failed to get git diff for {}: {}",
+            file_path,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(String::from_utf8(output.stdout)?)
+}
