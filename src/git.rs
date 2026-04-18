@@ -44,11 +44,33 @@ fn get_diff_strategy(
         let untracked = get_untracked_files(&args.common.paths, repo_root)?;
 
         if files.is_empty() && untracked.is_empty() {
-            if has_head {
-                bail!("No uncommitted changes found");
-            } else {
+            if !has_head {
                 bail!("No staged or untracked files found. Stage files with 'git add' first.");
             }
+
+            // No uncommitted changes — fall back to the parent commit, like jj does
+            let (diff_range, target_name) = if parent_exists(repo_root)? {
+                ("HEAD~1..HEAD".to_string(), "HEAD~1")
+            } else {
+                // Empty tree hash to support reviewing the initial commit
+                let empty_tree = get_empty_tree_hash(repo_root)?;
+                (format!("{empty_tree}..HEAD"), "initial commit")
+            };
+
+            let parent_files =
+                get_git_changed_files(&[&diff_range], &args.common.paths, repo_root)?;
+            if parent_files.is_empty() {
+                bail!("No uncommitted changes found and {target_name} is also empty");
+            }
+
+            eprintln!("No uncommitted changes found, using {target_name}\n");
+
+            for file in &parent_files {
+                let diff = get_git_diff(&[&diff_range], file, context, repo_root)?;
+                diffs.insert(file.clone(), diff);
+            }
+
+            return Ok((parent_files, diffs, target_name.to_string()));
         }
 
         let untracked_set: HashSet<String> = untracked.iter().cloned().collect();
@@ -116,6 +138,24 @@ fn get_current_git_branch(repo_root: &std::path::Path) -> Result<String> {
     let output = run_command(&mut cmd)?;
     if !output.status.success() {
         bail!("Failed to get current git branch. Are you in a git repository?");
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+fn parent_exists(repo_root: &std::path::Path) -> Result<bool> {
+    let mut cmd = Command::new("git");
+    cmd.args(["rev-parse", "--verify", "HEAD~1"])
+        .current_dir(repo_root);
+    Ok(run_command(&mut cmd)?.status.success())
+}
+
+fn get_empty_tree_hash(repo_root: &std::path::Path) -> Result<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["hash-object", "-t", "tree", "/dev/null"])
+        .current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        bail!("Failed to get empty tree hash");
     }
     Ok(String::from_utf8(output.stdout)?.trim().to_string())
 }
