@@ -6,7 +6,7 @@ use std::process::Command;
 use crate::cli::GitArgs;
 use crate::domain::ReviewData;
 use crate::fs::{
-    build_review_data, get_local_file_content, get_repo_root, run_command, FileContent,
+    FileContent, build_review_data, get_local_file_content, get_repo_root, run_command,
 };
 
 pub fn extract_diff(args: &GitArgs) -> Result<ReviewData> {
@@ -15,7 +15,11 @@ pub fn extract_diff(args: &GitArgs) -> Result<ReviewData> {
     log::debug!(
         "Using repo root: {}{}",
         repo_root.display(),
-        if args.common.force_cwd { " (forced via --force-cwd)" } else { "" }
+        if args.common.force_cwd {
+            " (forced via --force-cwd)"
+        } else {
+            ""
+        }
     );
 
     let (changed_files, diffs, diff_target) = get_diff_strategy(args, &repo_root)?;
@@ -75,29 +79,29 @@ fn get_diff_strategy(
     } else {
         let current_branch = get_current_git_branch(repo_root)?;
 
-        let target_branch = match args.branch.as_deref() {
+        let target_ref = match args.target.as_deref() {
             None | Some("smart") => detect_smart_git_branch(&current_branch, repo_root)?,
-            Some(b) => b.to_string(),
+            Some(t) => t.to_string(),
         };
 
-        let diff_target = if args.branch.is_none() {
-            format!("{target_branch} (smart)")
+        let diff_target = if args.target.is_none() {
+            format!("{target_ref} (smart)")
         } else {
-            target_branch.clone()
+            target_ref.clone()
         };
 
-        if current_branch == target_branch {
-            bail!("Already on target branch '{target_branch}'. Nothing to compare.");
+        if current_branch == target_ref {
+            bail!("Already on target ref '{target_ref}'. Nothing to compare.");
         }
 
-        let branch_range = format!("{target_branch}...");
-        let files = get_git_changed_files(&[&branch_range], &args.common.paths, repo_root)?;
+        let diff_range = format!("{target_ref}...");
+        let files = get_git_changed_files(&[&diff_range], &args.common.paths, repo_root)?;
         if files.is_empty() {
-            bail!("No changes found compared to '{target_branch}'");
+            bail!("No changes found compared to '{target_ref}'");
         }
 
         for file in &files {
-            let diff = get_git_diff(&[branch_range.as_str()], file, context, repo_root)?;
+            let diff = get_git_diff(&[diff_range.as_str()], file, context, repo_root)?;
             diffs.insert(file.clone(), diff);
         }
 
@@ -107,7 +111,8 @@ fn get_diff_strategy(
 
 fn get_current_git_branch(repo_root: &std::path::Path) -> Result<String> {
     let mut cmd = Command::new("git");
-    cmd.args(["branch", "--show-current"]).current_dir(repo_root);
+    cmd.args(["branch", "--show-current"])
+        .current_dir(repo_root);
     let output = run_command(&mut cmd)?;
     if !output.status.success() {
         bail!("Failed to get current git branch. Are you in a git repository?");
@@ -117,7 +122,8 @@ fn get_current_git_branch(repo_root: &std::path::Path) -> Result<String> {
 
 fn head_exists(repo_root: &std::path::Path) -> Result<bool> {
     let mut cmd = Command::new("git");
-    cmd.args(["rev-parse", "--verify", "HEAD"]).current_dir(repo_root);
+    cmd.args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(repo_root);
     let output = run_command(&mut cmd)?;
     Ok(output.status.success())
 }
@@ -130,7 +136,8 @@ fn detect_smart_git_branch(current_branch: &str, repo_root: &std::path::Path) ->
         }
 
         let mut cmd = Command::new("git");
-        cmd.args(["rev-parse", "--verify", candidate]).current_dir(repo_root);
+        cmd.args(["rev-parse", "--verify", candidate])
+            .current_dir(repo_root);
         let output = run_command(&mut cmd)?;
         if output.status.success() {
             return Ok(candidate.to_string());

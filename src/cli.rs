@@ -93,12 +93,12 @@ pub struct GitArgs {
     #[command(flatten)]
     pub common: CommonArgs,
 
-    /// Branch to compare against (default: smart detection of develop/master/main)
-    #[arg(short, long, conflicts_with = "head")]
-    pub branch: Option<String>,
+    /// Target ref to compare against: branch, tag, or commit (default: smart detection of develop/master/main)
+    #[arg(short = 'b', long, conflicts_with = "head")]
+    pub target: Option<String>,
 
     /// Review only uncommitted changes (current working directory diff)
-    #[arg(long, default_value_t = false, conflicts_with = "branch")]
+    #[arg(long, default_value_t = false, conflicts_with = "target")]
     pub head: bool,
 }
 

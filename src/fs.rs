@@ -9,9 +9,9 @@ use std::process::{Command, Output, Stdio};
 
 /// Execute a command and optionally print it for debugging
 pub fn run_command(cmd: &mut Command) -> Result<Output> {
-    log::debug!("[exec] {:?}", cmd);
+    log::debug!("[exec] {cmd:?}");
     cmd.output()
-        .with_context(|| format!("Failed to execute: {:?}", cmd))
+        .with_context(|| format!("Failed to execute: {cmd:?}"))
 }
 
 /// Result of reading a local file
@@ -225,7 +225,7 @@ pub fn find_files_by_regex(
         .current_dir(repo_root)
         .stdout(Stdio::piped());
 
-    log::debug!("[spawn] {:?}", cmd);
+    log::debug!("[spawn] {cmd:?}");
 
     let mut child = cmd
         .spawn()
@@ -280,7 +280,9 @@ pub fn find_files_by_regex(
 /// Check if a path should be ignored based on pattern matching
 /// Supports both exact name matches and path-based patterns
 fn should_ignore_path(path_str: &str, ignore_patterns: &[String]) -> bool {
-    ignore_patterns.iter().any(|p| matches_ignore_pattern(path_str, p))
+    ignore_patterns
+        .iter()
+        .any(|p| matches_ignore_pattern(path_str, p))
 }
 
 /// Recursively collect all text files from a directory, excluding files already in changed_files
@@ -317,7 +319,8 @@ fn collect_files_from_directory(
         .filter_map(|e| {
             e.map_err(|err| {
                 log::warn!("Skipping entry in '{}': {}", dir_path.display(), err);
-            }).ok()
+            })
+            .ok()
         })
         .collect();
     entries.sort_by_key(|e| e.file_name());
@@ -406,12 +409,12 @@ pub fn resolve_all_context_files(
     max_regex_files: usize,
     opts: DirCollectOptions<'_>,
 ) -> Result<Vec<String>> {
-    let regex_matched_files =
-        find_files_by_regex(regex_patterns, max_regex_files, opts.repo_root)?;
+    let regex_matched_files = find_files_by_regex(regex_patterns, max_regex_files, opts.repo_root)?;
 
     // Build set of changed files as normalized absolute paths for deduplication
     let normalized_repo_root = normalize_path(opts.repo_root);
-    let changed_files_normalized: HashSet<PathBuf> = opts.changed_files
+    let changed_files_normalized: HashSet<PathBuf> = opts
+        .changed_files
         .iter()
         .map(|changed_file| normalize_path(&normalized_repo_root.join(changed_file)))
         .collect();
@@ -469,7 +472,8 @@ pub fn resolve_all_context_files(
     context_files.extend(regex_matched_files);
 
     // Validate explicit context files separately (they need existence/dedup checks)
-    let validated_explicit = validate_and_expand_context_files(explicit_files, opts.changed_files, opts.repo_root)?;
+    let validated_explicit =
+        validate_and_expand_context_files(explicit_files, opts.changed_files, opts.repo_root)?;
 
     // Combine with deduplication: use HashSet to track seen files
     let mut seen_files: HashSet<String> = HashSet::new();
@@ -551,14 +555,14 @@ pub fn build_review_data(
 ) -> Result<crate::domain::ReviewData> {
     let all_ignore_patterns = merge_ignore_patterns(&common.ignore_files);
     let filtered_files = filter_ignored_files(changed_files, &all_ignore_patterns);
-    
+
     let collect_opts = DirCollectOptions {
         ignore_patterns: &all_ignore_patterns,
         max_dir_files: common.max_dir_files,
         changed_files: &filtered_files,
         repo_root: &repo_root,
     };
-    
+
     let validated_context_files = resolve_all_context_files(
         &common.context_files,
         &common.append_dirs,
@@ -579,8 +583,8 @@ pub fn build_review_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_ignore_pattern_skips_directory() {
@@ -600,7 +604,8 @@ mod tests {
             100,
             &mut count,
             &mut truncated,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(result.len(), 1);
         assert!(result[0].ends_with("main.rs"));
@@ -625,7 +630,8 @@ mod tests {
             2,
             &mut count,
             &mut truncated,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(truncated);
@@ -649,7 +655,8 @@ mod tests {
             2,
             &mut count,
             &mut truncated,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(result.len(), 2);
         assert!(!truncated);
@@ -676,7 +683,8 @@ mod tests {
             100,
             &mut count,
             &mut truncated,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(result.len(), 1);
         assert!(result[0].ends_with("file2.rs"));
@@ -700,7 +708,8 @@ mod tests {
             100,
             &mut count,
             &mut truncated,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Files should be sorted alphabetically
         assert_eq!(result.len(), 3);
@@ -731,7 +740,8 @@ mod tests {
             100,
             &mut count,
             &mut truncated,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Should collect file.rs but not loop infinitely
         assert_eq!(result.len(), 1);

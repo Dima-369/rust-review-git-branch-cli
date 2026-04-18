@@ -13,7 +13,7 @@ fn test_diff_only_flag_not_working() {
     cmd.current_dir(repo_path).args([
         "git",
         "--diff-only",
-        "--branch",
+        "--target",
         "develop",
         "--no-copy-to-clipboard",
     ]); // Explicitly specify develop branch to compare against
@@ -51,7 +51,7 @@ fn test_diff_only_flag_not_working() {
     let mut cmd_full = code_reviewer_cmd();
     cmd_full
         .current_dir(repo_path)
-        .args(["git", "--branch", "develop", "--no-copy-to-clipboard"]); // Compare without the --diff-only flag
+        .args(["git", "--target", "develop", "--no-copy-to-clipboard"]); // Compare without the --diff-only flag
 
     let output_full = cmd_full
         .output()

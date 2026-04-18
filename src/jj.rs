@@ -14,7 +14,11 @@ pub fn extract_diff(args: &JjArgs) -> Result<ReviewData> {
     log::debug!(
         "Using repo root: {}{}",
         repo_root.display(),
-        if args.common.force_cwd { " (forced via --force-cwd)" } else { "" }
+        if args.common.force_cwd {
+            " (forced via --force-cwd)"
+        } else {
+            ""
+        }
     );
 
     let (changed_files, diffs, diff_target) = get_diff_strategy(args, &repo_root)?;
