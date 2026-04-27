@@ -32,7 +32,12 @@ fn get_diff_strategy(
     let mut diffs = HashMap::new();
     let context = args.common.context;
 
-    if args.head {
+    if args.head
+        || args
+            .target
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case("head") || t == "@")
+    {
         let files = get_jj_changed_files(None, &args.common.paths, repo_root)?;
         if files.is_empty() {
             let prev_files =
