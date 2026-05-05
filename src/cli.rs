@@ -21,7 +21,7 @@ pub enum Commands {
     Jj(JjArgs),
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct CommonArgs {
     /// Number of context lines to show in diff
     #[arg(short = 'u', long)]
@@ -88,7 +88,7 @@ pub struct CommonArgs {
     pub force_cwd: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct GitArgs {
     #[command(flatten)]
     pub common: CommonArgs,
@@ -102,7 +102,7 @@ pub struct GitArgs {
     pub head: bool,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct JjArgs {
     #[command(flatten)]
     pub common: CommonArgs,

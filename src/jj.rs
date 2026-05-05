@@ -1,12 +1,70 @@
 use anyhow::{Result, bail};
+use colored::Colorize;
 use std::collections::HashMap;
 use std::process::Command;
 
-use crate::cli::JjArgs;
+use crate::cli::{GitArgs, JjArgs};
 use crate::domain::ReviewData;
 use std::path::Path;
 
 use crate::fs::{build_review_data, get_repo_root, run_command};
+
+/// Fall back to using git operations when jj is not available.
+/// Maps jj args to equivalent git operations:
+///   - jj --head       => git --head (uncommitted/staged changes)
+///   - jj (smart)      => git (smart branch detection)
+///   - jj -b <target>  => git -b <target>
+fn fallback_to_git(args: &JjArgs) -> Result<ReviewData> {
+    let git_args = GitArgs {
+        common: args.common.clone(),
+        target: args.target.clone(),
+        head: args.head,
+    };
+
+    crate::git::extract_diff(&git_args)
+}
+
+/// Try to extract diff using jj. If jj is not installed or there's no jj repo, fall back to git.
+fn try_jj_or_fallback(args: &JjArgs, repo_root: &Path) -> Result<ReviewData> {
+    // Check if jj is installed and if there's a jj repo via "jj root"
+    let jj_root_check = match std::process::Command::new("jj")
+        .args(["root"])
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            // jj repo exists, proceed with jj operations
+            let (changed_files, diffs, diff_target) = get_diff_strategy(args, repo_root)?;
+            return build_review_data(
+                changed_files,
+                diffs,
+                diff_target,
+                &args.common,
+                repo_root.to_path_buf(),
+            );
+        }
+        Ok(output) => output,
+        Err(_) => {
+            // jj binary not found
+            eprintln!(
+                "{} Jujutsu (jj) not found, falling back to git\n",
+                "Warning:".yellow()
+            );
+            return fallback_to_git(args);
+        }
+    };
+
+    let stderr = String::from_utf8_lossy(&jj_root_check.stderr);
+    if stderr.contains("There is no jj repo") {
+        eprintln!(
+            "{} Not a JJ repo, falling back to git\n",
+            "Warning:".yellow()
+        );
+        fallback_to_git(args)
+    } else {
+        bail!("jj root failed: {stderr}");
+    }
+}
 
 pub fn extract_diff(args: &JjArgs) -> Result<ReviewData> {
     let repo_root = get_repo_root(args.common.force_cwd)?;
@@ -21,8 +79,7 @@ pub fn extract_diff(args: &JjArgs) -> Result<ReviewData> {
         }
     );
 
-    let (changed_files, diffs, diff_target) = get_diff_strategy(args, &repo_root)?;
-    build_review_data(changed_files, diffs, diff_target, &args.common, repo_root)
+    try_jj_or_fallback(args, &repo_root)
 }
 
 fn get_diff_strategy(
