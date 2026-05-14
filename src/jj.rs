@@ -1,5 +1,4 @@
 use anyhow::{Result, bail};
-use colored::Colorize;
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -46,20 +45,14 @@ fn try_jj_or_fallback(args: &JjArgs, repo_root: &Path) -> Result<ReviewData> {
         Ok(output) => output,
         Err(_) => {
             // jj binary not found
-            eprintln!(
-                "{} Jujutsu (jj) not found, falling back to git\n",
-                "Warning:".yellow()
-            );
+            crate::print_warning("Jujutsu (jj) not found, falling back to git.");
             return fallback_to_git(args);
         }
     };
 
     let stderr = String::from_utf8_lossy(&jj_root_check.stderr);
     if stderr.contains("There is no jj repo") {
-        eprintln!(
-            "{} Not a JJ repo, falling back to git\n",
-            "Warning:".yellow()
-        );
+        crate::print_warning("Not a JJ repo, falling back to git.");
         fallback_to_git(args)
     } else {
         bail!("jj root failed: {stderr}");

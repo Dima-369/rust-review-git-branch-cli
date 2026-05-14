@@ -5,6 +5,11 @@ use std::process::exit;
 
 use crate::fs::format_path_for_display;
 
+/// Print a consistent warning message to stderr, followed by a blank line.
+pub fn print_warning(msg: &str) {
+    eprintln!("{} {msg}\n", "Warning:".yellow());
+}
+
 mod cli;
 mod clipboard;
 mod domain;

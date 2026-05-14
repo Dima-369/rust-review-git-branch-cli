@@ -29,13 +29,18 @@ pub fn generate(
 
     if !ignore_prompt {
         let prompt_text = match custom_prompt_file {
-            Some(file_path) => {
-                std::fs::read_to_string(file_path).unwrap_or_else(|_| DEFAULT_PROMPT.to_string())
-            }
+            Some(file_path) => std::fs::read_to_string(file_path).unwrap_or_else(|e| {
+                crate::print_warning(&format!(
+                    "prompt file '{file_path}' not found: {e}. Continuing without any prefix prompt."
+                ));
+                String::new()
+            }),
             None => DEFAULT_PROMPT.to_string(),
         };
         prompt_part.push_str(&prompt_text);
-        prompt_part.push_str("\n\n");
+        if !prompt_text.is_empty() {
+            prompt_part.push_str("\n\n");
+        }
     }
 
     if !review_data.context_files.is_empty() {
