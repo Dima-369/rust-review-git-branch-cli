@@ -72,8 +72,10 @@ pub struct CommonArgs {
     pub max_dir_files: usize,
 
     /// Files to ignore from the review (repeatable flag, defaults to common files like Cargo.lock)
-    /// Supports glob patterns (`*`, `**`, `?`, `[...]`). Note: `*` crosses path separators,
-    /// so `mock-data/*.json` matches any `.json` file anywhere under `mock-data/`.
+    /// Supports glob patterns with `.gitignore` semantics: `*` does not cross path
+    /// separators (`/`), so use `**` for recursive matching. Patterns match anywhere
+    /// in the tree, e.g. `mock-data/*.json` ignores any `.json` directly under a
+    /// `mock-data/` directory at any depth.
     #[arg(short = 'i', long = "ignore-file", value_name = "PATH_PATTERN")]
     pub ignore_files: Vec<String>,
 

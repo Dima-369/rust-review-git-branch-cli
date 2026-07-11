@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use path_clean::PathClean;
 use regex::RegexSet;
 use std::collections::HashSet;
@@ -277,20 +278,12 @@ pub fn find_files_by_regex(
     Ok(matched_files)
 }
 
-/// Check if a path should be ignored based on pattern matching
-/// Supports both exact name matches and path-based patterns
-fn should_ignore_path(path_str: &str, ignore_patterns: &[String]) -> bool {
-    ignore_patterns
-        .iter()
-        .any(|p| matches_ignore_pattern(path_str, p))
-}
-
 /// Recursively collect all text files from a directory, excluding files already in changed_files
 /// and respecting ignore patterns. Uses canonical path tracking to prevent symlink loops.
 fn collect_files_from_directory(
     dir_path: &Path,
     changed_files: &HashSet<PathBuf>,
-    ignore_patterns: &[String],
+    matcher: &IgnoreMatcher,
     visited: &mut HashSet<PathBuf>,
     max_files: usize,
     files_collected: &mut usize,
@@ -339,7 +332,7 @@ fn collect_files_from_directory(
             // Normalize to forward slashes for cross-platform pattern matching
             let lossy = entry_path.to_string_lossy();
             let path_str = lossy.replace('\\', "/");
-            if should_ignore_path(&path_str, ignore_patterns) {
+            if matcher.is_ignored(&path_str) {
                 // Silently skip ignored directories (common case: node_modules, target, etc.)
                 continue;
             }
@@ -348,7 +341,7 @@ fn collect_files_from_directory(
             collected_files.extend(collect_files_from_directory(
                 &entry_path,
                 changed_files,
-                ignore_patterns,
+                matcher,
                 visited,
                 max_files,
                 files_collected,
@@ -359,7 +352,7 @@ fn collect_files_from_directory(
             // Normalize to forward slashes for cross-platform pattern matching
             let lossy = entry_path.to_string_lossy();
             let path_str = lossy.replace('\\', "/");
-            if should_ignore_path(&path_str, ignore_patterns) {
+            if matcher.is_ignored(&path_str) {
                 // Silently skip ignored files
                 continue;
             }
@@ -394,7 +387,7 @@ fn collect_files_from_directory(
 /// Options for collecting files from directories
 #[derive(Debug)]
 pub struct DirCollectOptions<'a> {
-    pub ignore_patterns: &'a [String],
+    pub matcher: &'a IgnoreMatcher,
     pub max_dir_files: usize,
     pub changed_files: &'a [String],
     pub repo_root: &'a Path,
@@ -448,7 +441,7 @@ pub fn resolve_all_context_files(
         let collected = collect_files_from_directory(
             &abs_dir_path,
             &changed_files_normalized,
-            opts.ignore_patterns,
+            opts.matcher,
             &mut visited,
             opts.max_dir_files,
             &mut files_collected,
@@ -507,28 +500,71 @@ pub fn merge_ignore_patterns(user_patterns: &[String]) -> Vec<String> {
     }
 }
 
-/// Check if a file path matches an ignore pattern.
+/// Returns true if the pattern contains glob metacharacters (`*`, `?`, or `[`).
+fn is_glob_pattern(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+}
+
+/// Pre-compiled ignore patterns for efficient matching.
 ///
-/// Supports:
-/// - Simple path-component matching (exact, prefix, suffix, component)
-/// - Glob patterns (`*`, `**`, `?`, `[...]`) via the `glob` crate when the pattern
-///   contains metacharacters
-///
-/// ponytail: compiles glob::Pattern on every match call; cache compiled patterns if
-/// this becomes a hot path.
-fn matches_ignore_pattern(file: &str, pattern: &str) -> bool {
-    // Try glob matching first when the pattern contains metacharacters
-    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-        if let Ok(glob) = glob::Pattern::new(pattern) {
-            if glob.matches(file) {
-                return true;
+/// Glob patterns (containing `*`, `?`, or `[`) are compiled once into a `GlobSet`
+/// using `.gitignore`-style semantics: `*` does not cross path separators (`/`),
+/// and `**` is required for recursive matching. Each glob is prefixed with `**/`
+/// so it matches anywhere in the tree. Literal patterns use path-component matching.
+#[derive(Debug)]
+pub struct IgnoreMatcher {
+    /// Literal patterns for path-component matching (exact, prefix, suffix, component).
+    literals: Vec<String>,
+    /// Pre-compiled glob patterns; matches if ANY glob matches.
+    globs: GlobSet,
+}
+
+impl IgnoreMatcher {
+    /// Build a matcher from raw ignore patterns. Invalid globs are skipped with a warning.
+    pub fn new(patterns: &[String]) -> Self {
+        let mut literals = Vec::new();
+        let mut builder = GlobSetBuilder::new();
+
+        for pattern in patterns {
+            if is_glob_pattern(pattern) {
+                // Prefix with **/ so the pattern matches anywhere in the tree,
+                // e.g. `mock-data/*.json` also catches `deep/mock-data/foo.json`.
+                // (globset's ** matches zero segments, so root-level paths match too.)
+                let anchored = if pattern.starts_with("**/") {
+                    pattern.clone()
+                } else {
+                    format!("**/{pattern}")
+                };
+                match GlobBuilder::new(&anchored).literal_separator(true).build() {
+                    Ok(glob) => {
+                        builder.add(glob);
+                    }
+                    Err(e) => log::warn!("Invalid glob ignore pattern {pattern:?}: {e}"),
+                }
+            } else {
+                literals.push(pattern.clone());
             }
         }
+
+        let globs = builder.build().unwrap_or_else(|_| GlobSet::empty());
+        IgnoreMatcher { literals, globs }
     }
 
-    // Simple path-component matching for non-glob patterns
-    // (also catches glob patterns where compilation fails)
+    /// Returns true if `path` matches any ignore pattern.
+    pub fn is_ignored(&self, path: &str) -> bool {
+        if self.globs.is_match(path) {
+            return true;
+        }
+        self.literals
+            .iter()
+            .any(|p| matches_literal_component(path, p))
+    }
+}
 
+/// Check if a file path matches a literal (non-glob) pattern via path components.
+/// Handles exact, prefix, suffix, and middle-component matching. Works on both
+/// relative and absolute paths.
+fn matches_literal_component(file: &str, pattern: &str) -> bool {
     // Exact match
     if file == pattern {
         return true;
@@ -553,14 +589,10 @@ fn matches_ignore_pattern(file: &str, pattern: &str) -> bool {
 }
 
 /// Filters out files that match any of the ignore patterns
-pub fn filter_ignored_files(files: Vec<String>, ignore_patterns: &[String]) -> Vec<String> {
+pub fn filter_ignored_files(files: Vec<String>, matcher: &IgnoreMatcher) -> Vec<String> {
     files
         .into_iter()
-        .filter(|file| {
-            !ignore_patterns
-                .iter()
-                .any(|p| matches_ignore_pattern(file, p))
-        })
+        .filter(|file| !matcher.is_ignored(file))
         .collect()
 }
 
@@ -574,10 +606,11 @@ pub fn build_review_data(
     repo_root: std::path::PathBuf,
 ) -> Result<crate::domain::ReviewData> {
     let all_ignore_patterns = merge_ignore_patterns(&common.ignore_files);
-    let filtered_files = filter_ignored_files(changed_files, &all_ignore_patterns);
+    let matcher = IgnoreMatcher::new(&all_ignore_patterns);
+    let filtered_files = filter_ignored_files(changed_files, &matcher);
 
     let collect_opts = DirCollectOptions {
-        ignore_patterns: &all_ignore_patterns,
+        matcher: &matcher,
         max_dir_files: common.max_dir_files,
         changed_files: &filtered_files,
         repo_root: &repo_root,
@@ -606,6 +639,12 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
+    /// Build an IgnoreMatcher from string-literal patterns (test convenience).
+    fn matcher(patterns: &[&str]) -> IgnoreMatcher {
+        let pats: Vec<String> = patterns.iter().map(|s| s.to_string()).collect();
+        IgnoreMatcher::new(&pats)
+    }
+
     #[test]
     fn test_ignore_pattern_skips_directory() {
         let dir = TempDir::new().unwrap();
@@ -619,7 +658,7 @@ mod tests {
         let result = collect_files_from_directory(
             dir.path(),
             &HashSet::new(),
-            &["node_modules".to_string()],
+            &matcher(&["node_modules"]),
             &mut visited,
             100,
             &mut count,
@@ -645,7 +684,7 @@ mod tests {
         let result = collect_files_from_directory(
             dir.path(),
             &HashSet::new(),
-            &[],
+            &matcher(&[]),
             &mut visited,
             2,
             &mut count,
@@ -670,7 +709,7 @@ mod tests {
         let result = collect_files_from_directory(
             dir.path(),
             &HashSet::new(),
-            &[],
+            &matcher(&[]),
             &mut visited,
             2,
             &mut count,
@@ -698,7 +737,7 @@ mod tests {
         let result = collect_files_from_directory(
             dir.path(),
             &changed_files,
-            &[],
+            &matcher(&[]),
             &mut visited,
             100,
             &mut count,
@@ -723,7 +762,7 @@ mod tests {
         let result = collect_files_from_directory(
             dir.path(),
             &HashSet::new(),
-            &[],
+            &matcher(&[]),
             &mut visited,
             100,
             &mut count,
@@ -755,7 +794,7 @@ mod tests {
         let result = collect_files_from_directory(
             dir.path(),
             &HashSet::new(),
-            &[],
+            &matcher(&[]),
             &mut visited,
             100,
             &mut count,
@@ -769,56 +808,37 @@ mod tests {
     }
 
     #[test]
-    fn test_matches_ignore_pattern_glob() {
-        // Note: glob::Pattern's * matches across / (unlike shell glob),
-        // so mock-data/*.json also catches nested files.
+    fn test_ignore_matcher_glob() {
+        // mock-data/*.json — with literal_separator, * does NOT cross /, so only
+        // .json files directly under a mock-data/ dir match (anywhere in the tree
+        // thanks to the automatic **/ prefix).
+        let is = |file, pats: &[&str]| matcher(pats).is_ignored(file);
 
-        // Prefix-anchored glob — * crosses /
-        assert!(matches_ignore_pattern(
-            "mock-data/schema.json",
-            "mock-data/*.json"
-        ));
-        assert!(matches_ignore_pattern(
-            "mock-data/foo.json",
-            "mock-data/*.json"
-        ));
-        assert!(matches_ignore_pattern(
-            "mock-data/sub/schema.json",
-            "mock-data/*.json"
-        ));
-        assert!(!matches_ignore_pattern(
-            "other/schema.json",
-            "mock-data/*.json"
-        ));
+        assert!(is("mock-data/foo.json", &["mock-data/*.json"]));
+        assert!(is("deep/mock-data/foo.json", &["mock-data/*.json"]));
+        assert!(is("api-routes/X/mock-data/get.json", &["mock-data/*.json"]));
+        assert!(!is("mock-data/sub/foo.json", &["mock-data/*.json"])); // * doesn't cross /
+        assert!(!is("other/foo.txt", &["mock-data/*.json"]));
 
-        // ** also crosses /
-        assert!(matches_ignore_pattern(
-            "mock-data/sub/schema.json",
-            "mock-data/**/*.json"
-        ));
-        assert!(matches_ignore_pattern(
-            "mock-data/schema.json",
-            "mock-data/**/*.json"
-        ));
+        // ** for recursive matching into nested subdirs
+        assert!(is("mock-data/sub/foo.json", &["mock-data/**/*.json"]));
 
-        // ? matches any single character
-        assert!(matches_ignore_pattern("test.rs", "test.??"));
-        assert!(matches_ignore_pattern("test.py", "test.??"));
+        // *.json — matches any .json anywhere in the tree (**/ prefix)
+        assert!(is("readme.json", &["*.json"]));
+        assert!(is("src/readme.json", &["*.json"]));
+
+        // ? matches a single non-separator character
+        assert!(is("test.rs", &["test.??"]));
+        assert!(is("test.py", &["test.??"]));
+        assert!(!is("test.rs", &["test.?"])); // only one char after .
 
         // Character class
-        assert!(matches_ignore_pattern("test.rs", "test.[rsp]s"));
-        assert!(!matches_ignore_pattern("test.py", "test.[rsp]s"));
+        assert!(is("test.rs", &["test.[rsp]s"]));
+        assert!(!is("test.py", &["test.[rsp]s"]));
 
-        // Non-glob patterns still use component matching
-        assert!(matches_ignore_pattern("Cargo.lock", "Cargo.lock"));
-        assert!(matches_ignore_pattern("src/main.rs", "main.rs"));
-        assert!(matches_ignore_pattern(
-            "node_modules/pkg.js",
-            "node_modules"
-        ));
-
-        // Glob at root — * crosses / in glob::Pattern
-        assert!(matches_ignore_pattern("readme.md", "*.md"));
-        assert!(matches_ignore_pattern("src/readme.md", "*.md"));
+        // Literal patterns (no glob chars) use path-component matching
+        assert!(is("Cargo.lock", &["Cargo.lock"]));
+        assert!(is("src/main.rs", &["main.rs"]));
+        assert!(is("node_modules/pkg.js", &["node_modules"]));
     }
 }
