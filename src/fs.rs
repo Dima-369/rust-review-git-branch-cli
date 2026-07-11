@@ -502,7 +502,7 @@ pub fn merge_ignore_patterns(user_patterns: &[String]) -> Vec<String> {
 
 /// Returns true if the pattern contains glob metacharacters (`*`, `?`, or `[`).
 fn is_glob_pattern(pattern: &str) -> bool {
-    pattern.contains('*') || pattern.contains('?') || pattern.contains('[')
+    pattern.contains('*') || pattern.contains('?') || pattern.contains('[') || pattern.contains('{')
 }
 
 /// Pre-compiled ignore patterns for efficient matching.
@@ -530,10 +530,11 @@ impl IgnoreMatcher {
                 // Prefix with **/ so the pattern matches anywhere in the tree,
                 // e.g. `mock-data/*.json` also catches `deep/mock-data/foo.json`.
                 // (globset's ** matches zero segments, so root-level paths match too.)
-                let anchored = if pattern.starts_with("**/") {
-                    pattern.clone()
+                let trimmed = pattern.strip_prefix('/').unwrap_or(pattern);
+                let anchored = if trimmed.starts_with("**/") {
+                    trimmed.to_string()
                 } else {
-                    format!("**/{pattern}")
+                    format!("**/{trimmed}")
                 };
                 match GlobBuilder::new(&anchored).literal_separator(true).build() {
                     Ok(glob) => {
@@ -840,5 +841,15 @@ mod tests {
         assert!(is("Cargo.lock", &["Cargo.lock"]));
         assert!(is("src/main.rs", &["main.rs"]));
         assert!(is("node_modules/pkg.js", &["node_modules"]));
+
+        // Brace expansion (globset feature)
+        assert!(is("main.rs", &["*.{rs,py}"]));
+        assert!(is("main.py", &["*.{rs,py}"]));
+        assert!(!is("main.js", &["*.{rs,py}"]));
+
+        // Leading slash is stripped before **/ prefix
+        assert!(is("mock-data/foo.json", &["/mock-data/*.json"]));
+        assert!(is("deep/mock-data/foo.json", &["/mock-data/*.json"]));
+        assert!(!is("other/foo.txt", &["/mock-data/*.json"]));
     }
 }
