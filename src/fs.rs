@@ -507,8 +507,28 @@ pub fn merge_ignore_patterns(user_patterns: &[String]) -> Vec<String> {
     }
 }
 
-/// Check if a file path matches an ignore pattern
+/// Check if a file path matches an ignore pattern.
+///
+/// Supports:
+/// - Simple path-component matching (exact, prefix, suffix, component)
+/// - Glob patterns (`*`, `**`, `?`, `[...]`) via the `glob` crate when the pattern
+///   contains metacharacters
+///
+/// ponytail: compiles glob::Pattern on every match call; cache compiled patterns if
+/// this becomes a hot path.
 fn matches_ignore_pattern(file: &str, pattern: &str) -> bool {
+    // Try glob matching first when the pattern contains metacharacters
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        if let Ok(glob) = glob::Pattern::new(pattern) {
+            if glob.matches(file) {
+                return true;
+            }
+        }
+    }
+
+    // Simple path-component matching for non-glob patterns
+    // (also catches glob patterns where compilation fails)
+
     // Exact match
     if file == pattern {
         return true;
@@ -746,5 +766,59 @@ mod tests {
         // Should collect file.rs but not loop infinitely
         assert_eq!(result.len(), 1);
         assert!(result[0].ends_with("file.rs"));
+    }
+
+    #[test]
+    fn test_matches_ignore_pattern_glob() {
+        // Note: glob::Pattern's * matches across / (unlike shell glob),
+        // so mock-data/*.json also catches nested files.
+
+        // Prefix-anchored glob — * crosses /
+        assert!(matches_ignore_pattern(
+            "mock-data/schema.json",
+            "mock-data/*.json"
+        ));
+        assert!(matches_ignore_pattern(
+            "mock-data/foo.json",
+            "mock-data/*.json"
+        ));
+        assert!(matches_ignore_pattern(
+            "mock-data/sub/schema.json",
+            "mock-data/*.json"
+        ));
+        assert!(!matches_ignore_pattern(
+            "other/schema.json",
+            "mock-data/*.json"
+        ));
+
+        // ** also crosses /
+        assert!(matches_ignore_pattern(
+            "mock-data/sub/schema.json",
+            "mock-data/**/*.json"
+        ));
+        assert!(matches_ignore_pattern(
+            "mock-data/schema.json",
+            "mock-data/**/*.json"
+        ));
+
+        // ? matches any single character
+        assert!(matches_ignore_pattern("test.rs", "test.??"));
+        assert!(matches_ignore_pattern("test.py", "test.??"));
+
+        // Character class
+        assert!(matches_ignore_pattern("test.rs", "test.[rsp]s"));
+        assert!(!matches_ignore_pattern("test.py", "test.[rsp]s"));
+
+        // Non-glob patterns still use component matching
+        assert!(matches_ignore_pattern("Cargo.lock", "Cargo.lock"));
+        assert!(matches_ignore_pattern("src/main.rs", "main.rs"));
+        assert!(matches_ignore_pattern(
+            "node_modules/pkg.js",
+            "node_modules"
+        ));
+
+        // Glob at root — * crosses / in glob::Pattern
+        assert!(matches_ignore_pattern("readme.md", "*.md"));
+        assert!(matches_ignore_pattern("src/readme.md", "*.md"));
     }
 }

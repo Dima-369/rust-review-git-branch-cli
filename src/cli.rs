@@ -72,6 +72,8 @@ pub struct CommonArgs {
     pub max_dir_files: usize,
 
     /// Files to ignore from the review (repeatable flag, defaults to common files like Cargo.lock)
+    /// Supports glob patterns (`*`, `**`, `?`, `[...]`). Note: `*` crosses path separators,
+    /// so `mock-data/*.json` matches any `.json` file anywhere under `mock-data/`.
     #[arg(short = 'i', long = "ignore-file", value_name = "PATH_PATTERN")]
     pub ignore_files: Vec<String>,
 
