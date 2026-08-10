@@ -18,6 +18,10 @@ code-reviewer jj --head
 # Note that it respects .gitignore.
 code-reviewer jj --context-file-regex 'Cargo\.toml|Cargo\.lock'
 code-reviewer jj --context-file-regex '^src/.*\.rs$'
+
+# Skip full-file content for big files (e.g. diaries, logs) without listing each with -i.
+# Files with MORE than N lines are shown as diff-only. Smaller files still get full content.
+code-reviewer git --head --diff-only-large-files 16000
 ```
 
 You can specify multiple `--context-file` flags to pass in other files for context.

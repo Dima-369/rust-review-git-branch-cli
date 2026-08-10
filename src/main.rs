@@ -62,6 +62,7 @@ fn run(cli: Cli) -> Result<()> {
         &review_data,
         common.prompt_file.as_deref(),
         common.diff_only,
+        common.diff_only_large_files,
         common.ignore_prompt,
     )?;
 
@@ -71,6 +72,7 @@ fn run(cli: Cli) -> Result<()> {
             result.prompt_tokens,
             result.file_content_tokens,
             false,
+            &result.large_files_diff_only,
         );
     } else {
         handle_output(
@@ -84,11 +86,13 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 /// Print stats summary and file list
+#[allow(clippy::too_many_arguments)]
 fn print_stats(
     review_data: &crate::domain::ReviewData,
     prompt_tokens: usize,
     file_content_tokens: usize,
     copied: bool,
+    large_files_diff_only: &[(String, usize)],
 ) {
     for file in &review_data.changed_files {
         println!("  {file}");
@@ -113,6 +117,13 @@ fn print_stats(
         tokenizer::format_token_count(file_content_tokens),
         copied_str
     );
+    if !large_files_diff_only.is_empty() {
+        println!("{}", "Large files shown as diff-only:".yellow());
+        for (file, lines) in large_files_diff_only {
+            let display_path = format_path_for_display(file, &review_data.repo_root);
+            println!("  {display_path} ({lines} lines)");
+        }
+    }
 }
 
 /// Handle output to stdout or clipboard
@@ -128,6 +139,7 @@ fn handle_output(
             result.prompt_tokens,
             result.file_content_tokens,
             true,
+            &result.large_files_diff_only,
         );
     } else {
         println!("{}", result.prompt);

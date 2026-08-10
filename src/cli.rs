@@ -31,6 +31,12 @@ pub struct CommonArgs {
     #[arg(long, default_value_t = false)]
     pub diff_only: bool,
 
+    /// Show only diff (no full file content) for files with MORE than LINE_THRESHOLD lines.
+    /// Useful to skip huge generated/log files without having to list each with -i/--ignore-file.
+    /// Files at or below the threshold still get full content. No effect with --diff-only.
+    #[arg(long = "diff-only-large-files", value_name = "LINE_THRESHOLD")]
+    pub diff_only_large_files: Option<usize>,
+
     /// Copy output to clipboard (enabled by default)
     #[arg(long, default_value_t = true)]
     pub copy_to_clipboard: bool,
