@@ -94,8 +94,20 @@ fn print_stats(
     copied: bool,
     large_files_diff_only: &[(String, usize)],
 ) {
+    // Each large file is annotated inline in the changed-files list, mirroring
+    // how context files already get a `(context file)` suffix. List is tiny, so
+    // a linear scan beats a HashMap alloc. `large_files_diff_only` clones its
+    // paths straight from `changed_files` (prompt.rs), so the strings match
+    // byte-for-byte -- no path normalization needed.
     for file in &review_data.changed_files {
-        println!("  {file}");
+        if let Some((_, lines)) = large_files_diff_only.iter().find(|(f, _)| f == file) {
+            println!(
+                "  {file} {}",
+                format!("(diff-only: {lines} lines)").yellow()
+            );
+        } else {
+            println!("  {file}");
+        }
     }
     for file in &review_data.context_files {
         let display_path = format_path_for_display(file, &review_data.repo_root);
@@ -117,13 +129,6 @@ fn print_stats(
         tokenizer::format_token_count(file_content_tokens),
         copied_str
     );
-    if !large_files_diff_only.is_empty() {
-        println!("{}", "Large files shown as diff-only:".yellow());
-        for (file, lines) in large_files_diff_only {
-            let display_path = format_path_for_display(file, &review_data.repo_root);
-            println!("  {display_path} ({lines} lines)");
-        }
-    }
 }
 
 /// Handle output to stdout or clipboard
