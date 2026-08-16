@@ -91,6 +91,16 @@ fn get_diff_strategy(
                     FileContent::Deleted => {
                         diffs.insert(file.clone(), String::new());
                     }
+                    content @ FileContent::Directory => {
+                        // Untracked nested repo (e.g. a submodule git init'd but
+                        // not yet registered) — git reports it as a single path
+                        // ending in '/' rather than expanding its contents.
+                        log::warn!(
+                            "Skipping '{}': untracked directory (likely a nested/submodule repo)",
+                            full_path.display()
+                        );
+                        diffs.insert(file.clone(), content.to_display_string());
+                    }
                     FileContent::Content(_) => {
                         let diff = get_no_index_new_file_diff(repo_root, file, context)?;
                         diffs.insert(file.clone(), diff);

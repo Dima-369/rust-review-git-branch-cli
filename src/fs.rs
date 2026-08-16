@@ -24,6 +24,9 @@ pub enum FileContent {
     Deleted,
     /// File is binary or contains invalid UTF-8
     Binary,
+    /// Path is a directory (e.g. a submodule or nested repo reported as a "file"
+    /// by git), not a regular file — nothing sensible to read.
+    Directory,
 }
 
 impl FileContent {
@@ -33,13 +36,23 @@ impl FileContent {
             FileContent::Content(s) => s.clone(),
             FileContent::Deleted => "(File deleted)".to_string(),
             FileContent::Binary => "(Binary file or invalid UTF-8 content)".to_string(),
+            FileContent::Directory => {
+                "(Directory, not a file — likely a submodule or nested repo; contents not included)"
+                    .to_string()
+            }
         }
     }
 }
 
-/// Read local file content, handling deleted files and binary files gracefully
+/// Read local file content, handling deleted files, binary files, and
+/// directories (e.g. submodules or nested repos) gracefully
 pub fn get_local_file_content(file_path: impl AsRef<Path>) -> Result<FileContent> {
     let path = file_path.as_ref();
+    // Checked up front rather than relying on the read error: on some platforms
+    // reading a directory doesn't map to a distinguishable ErrorKind.
+    if path.is_dir() {
+        return Ok(FileContent::Directory);
+    }
     match fs::read_to_string(path) {
         Ok(content) => Ok(FileContent::Content(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(FileContent::Deleted),

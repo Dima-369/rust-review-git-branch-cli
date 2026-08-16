@@ -29,6 +29,34 @@ fn test_git_head_changes() {
 }
 
 #[test]
+fn test_git_head_with_untracked_nested_repo() {
+    // Regression test: an untracked nested git repo (e.g. a submodule that was
+    // `git init`'d but not yet registered) is reported by
+    // `git ls-files --others` as a single directory path ("data/") rather than
+    // being expanded into files. Previously this crashed with
+    // "Failed to read file '...': Is a directory (os error 21)".
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    let nested = root.join("data");
+    fs::create_dir(&nested).unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&nested)
+        .output()
+        .unwrap();
+    fs::write(nested.join("inner.txt"), "inner content").unwrap();
+
+    let mut cmd = code_reviewer_cmd();
+    cmd.current_dir(root)
+        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("data/"))
+        .stdout(predicates::str::contains("nested repo"));
+}
+
+#[test]
 fn test_git_smart_branch_detection() {
     let temp = setup_git_repo();
     let root = temp.path();
