@@ -128,10 +128,23 @@ pub struct JjArgs {
 
 pub fn get_default_ignore_patterns() -> Vec<String> {
     vec![
+        // Package manager lockfiles (generated artifacts, noisy in review diffs)
         "Cargo.lock".to_string(),
+        "composer.lock".to_string(),
+        "pnpm-lock.yaml".to_string(),
+        "package-lock.json".to_string(),
+        "yarn.lock".to_string(),
+        "bun.lock".to_string(),
+        "bun.lockb".to_string(),
+        "deno.lock".to_string(),
+        "uv.lock".to_string(),
+        "poetry.lock".to_string(),
+        "Pipfile.lock".to_string(),
+        "pdm.lock".to_string(),
+        "go.sum".to_string(),
+        "Gemfile.lock".to_string(),
         ".gitignore".to_string(),
         ".gitmodules".to_string(),
-        "composer.lock".to_string(),
         ".DS_Store".to_string(),
         "Thumbs.db".to_string(),
         "node_modules".to_string(),
@@ -145,8 +158,6 @@ pub fn get_default_ignore_patterns() -> Vec<String> {
         "out".to_string(),
         "vendor".to_string(),
         "Pods".to_string(),
-        "pnpm-lock.yaml".to_string(),
-        "uv.lock".to_string(),
         // Version control directories
         ".git".to_string(),
         ".svn".to_string(),
