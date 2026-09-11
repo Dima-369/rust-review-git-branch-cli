@@ -146,6 +146,7 @@ pub fn get_default_ignore_patterns() -> Vec<String> {
         "vendor".to_string(),
         "Pods".to_string(),
         "pnpm-lock.yaml".to_string(),
+        "uv.lock".to_string(),
         // Version control directories
         ".git".to_string(),
         ".svn".to_string(),
