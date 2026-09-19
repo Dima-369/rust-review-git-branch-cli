@@ -63,6 +63,7 @@ fn run(cli: Cli) -> Result<()> {
         common.prompt_file.as_deref(),
         common.diff_only,
         common.diff_only_large_files,
+        common.skip_files_over_tokens,
         common.ignore_prompt,
     )?;
 
@@ -73,6 +74,7 @@ fn run(cli: Cli) -> Result<()> {
             result.file_content_tokens,
             false,
             &result.large_files_diff_only,
+            &result.skipped_files_tokens,
         );
     } else {
         handle_output(
@@ -86,21 +88,32 @@ fn run(cli: Cli) -> Result<()> {
 }
 
 /// Print stats summary and file list
-#[allow(clippy::too_many_arguments)]
 fn print_stats(
     review_data: &crate::domain::ReviewData,
     prompt_tokens: usize,
     file_content_tokens: usize,
     copied: bool,
     large_files_diff_only: &[(String, usize)],
+    skipped_files_tokens: &[(String, usize)],
 ) {
-    // Each large file is annotated inline in the changed-files list, mirroring
-    // how context files already get a `(context file)` suffix. List is tiny, so
-    // a linear scan beats a HashMap alloc. `large_files_diff_only` clones its
-    // paths straight from `changed_files` (prompt.rs), so the strings match
+    // Trimmed files are annotated inline in the changed-files list, mirroring
+    // how context files already get a `(context file)` suffix. Lists are tiny,
+    // so a linear scan beats a HashMap alloc. Both vecs clone their paths
+    // straight from `changed_files` (prompt.rs), so the strings match
     // byte-for-byte -- no path normalization needed.
     for file in &review_data.changed_files {
-        if let Some((_, lines)) = large_files_diff_only.iter().find(|(f, _)| f == file) {
+        // Token-skip wins over the line-threshold annotation: when both apply
+        // the diff may be gone entirely, so "diff-only" would be a lie.
+        if let Some((_, tokens)) = skipped_files_tokens.iter().find(|(f, _)| f == file) {
+            println!(
+                "  {file} {}",
+                format!(
+                    "(skipped: {} tokens)",
+                    tokenizer::format_token_count(*tokens)
+                )
+                .yellow()
+            );
+        } else if let Some((_, lines)) = large_files_diff_only.iter().find(|(f, _)| f == file) {
             println!(
                 "  {file} {}",
                 format!("(diff-only: {lines} lines)").yellow()
@@ -145,6 +158,7 @@ fn handle_output(
             result.file_content_tokens,
             true,
             &result.large_files_diff_only,
+            &result.skipped_files_tokens,
         );
     } else {
         println!("{}", result.prompt);

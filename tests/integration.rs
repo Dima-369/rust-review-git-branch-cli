@@ -381,3 +381,145 @@ fn test_git_ignore_file_combined_patterns() {
         .stdout(predicates::str::contains("Cargo.lock").not()) // Should NOT contain Cargo.lock (default)
         .stdout(predicates::str::contains("custom.txt").not()); // Should NOT contain custom.txt (custom)
 }
+
+#[test]
+fn test_skip_files_over_tokens() {
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    // Commit a tracked file so it shows up as a modification (not a new file).
+    let big_path = root.join("big.txt");
+    fs::write(&big_path, "initial small content\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "big.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "Add big.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // Grow it well past the 100-token threshold (~1800 tokens).
+    let big_body = "word line for token counting\n".repeat(300);
+    fs::write(&big_path, &big_body).unwrap();
+
+    // Also touch a small file that should keep its full content.
+    let readme = root.join("README.md");
+    let mut file = fs::OpenOptions::new().append(true).open(readme).unwrap();
+    writeln!(file, "New line added").unwrap();
+
+    // Without the flag: big.txt gets full content.
+    let mut cmd = code_reviewer_cmd();
+    cmd.current_dir(root)
+        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(">>>> big.txt\n")) // full content included
+        .stdout(predicates::str::contains("+word line for token counting")); // diff included
+
+    // With the flag: big.txt's diff and content are both over the threshold,
+    // so both are dropped, but the file stays listed with a size annotation.
+    let mut cmd = code_reviewer_cmd();
+    cmd.current_dir(root)
+        .args([
+            "git",
+            "--head",
+            "--no-copy-to-clipboard",
+            "--skip-files-over-tokens",
+            "100",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(">>>> big.txt").not())
+        .stdout(predicates::str::contains("+word line for token counting").not())
+        .stdout(predicates::str::contains("(skipped: "))
+        .stdout(predicates::str::contains("exceeds threshold ~100"))
+        .stdout(predicates::str::contains("Diff omitted:"))
+        .stdout(predicates::str::contains(">>>> README.md"));
+}
+
+#[test]
+fn test_skip_files_over_tokens_takes_priority_over_diff_only_large() {
+    // A file hitting BOTH limits must be annotated as token-skipped: its diff
+    // was dropped entirely, so a "(diff-only: ... lines)" label would be wrong.
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    let big_path = root.join("big.txt");
+    fs::write(&big_path, "initial small content\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "big.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "Add big.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // 300 lines (> line threshold 5) and ~1800 tokens (> token threshold 100),
+    // so the diff is also over the token threshold.
+    let big_body = "word line for token counting\n".repeat(300);
+    fs::write(&big_path, &big_body).unwrap();
+
+    let mut cmd = code_reviewer_cmd();
+    cmd.current_dir(root)
+        .args([
+            "git",
+            "--head",
+            "--no-copy-to-clipboard",
+            "--diff-only-large-files",
+            "5",
+            "--skip-files-over-tokens",
+            "100",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("(skipped: "))
+        .stdout(predicates::str::contains("(diff-only: ").not())
+        .stdout(predicates::str::contains("Diff omitted:"))
+        .stdout(predicates::str::contains(">>>> big.txt").not());
+}
+
+#[test]
+fn test_skip_files_over_tokens_applies_to_diffs_in_diff_only_mode() {
+    // --diff-only used to bypass the token check entirely; huge diffs must
+    // still be caught there.
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    let big_path = root.join("big.txt");
+    fs::write(&big_path, "initial small content\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "big.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "Add big.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let big_body = "word line for token counting\n".repeat(300);
+    fs::write(&big_path, &big_body).unwrap();
+
+    let mut cmd = code_reviewer_cmd();
+    cmd.current_dir(root)
+        .args([
+            "git",
+            "--head",
+            "--no-copy-to-clipboard",
+            "--diff-only",
+            "--skip-files-over-tokens",
+            "100",
+        ])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Diff omitted:"))
+        .stdout(predicates::str::contains("(skipped: "))
+        .stdout(predicates::str::contains("+word line for token counting").not());
+}

@@ -37,6 +37,19 @@ pub struct CommonArgs {
     #[arg(long = "diff-only-large-files", value_name = "LINE_THRESHOLD")]
     pub diff_only_large_files: Option<usize>,
 
+    /// Skip oversized per-file output: any changed file whose diff and/or full
+    /// content exceeds TOKENS tokens has that part omitted. Skipped files stay
+    /// in the file list, marked `(skipped: ~Xm tokens)`. The default of 1m
+    /// tokens is larger than the context window of most models, so real source
+    /// files are never caught — only pathological generated fixtures, logs, and
+    /// lockfiles. With --diff-only, only the diff check applies.
+    #[arg(
+        long = "skip-files-over-tokens",
+        value_name = "TOKENS",
+        default_value_t = 1_000_000
+    )]
+    pub skip_files_over_tokens: usize,
+
     /// Copy output to clipboard (enabled by default)
     #[arg(long, default_value_t = true)]
     pub copy_to_clipboard: bool,

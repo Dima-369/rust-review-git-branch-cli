@@ -22,6 +22,12 @@ code-reviewer jj --context-file-regex '^src/.*\.rs$'
 # Skip full-file content for big files (e.g. diaries, logs) without listing each with -i.
 # Files with MORE than N lines are shown as diff-only. Smaller files still get full content.
 code-reviewer git --head --diff-only-large-files 16000
+
+# Skip oversized per-file output for files whose diff and/or full content exceeds N
+# tokens; they stay listed, marked `(skipped: ~Xm tokens)`. Defaults to 1000000
+# (~1m): headroom above every common model context window, so real source is
+# never caught while multi-megabyte generated fixtures can't blow the prompt.
+code-reviewer git --head --skip-files-over-tokens 250000
 ```
 
 You can specify multiple `--context-file` flags to pass in other files for context.
