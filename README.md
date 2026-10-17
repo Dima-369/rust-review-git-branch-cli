@@ -3,14 +3,14 @@ Supports both `jj` and `git`.
 It writes to stdout and copies to clipboard by default.
 The output includes the diff of files and the full file content for context.
 
-There is the `--target` flag which is set to `smart` by default and diffs against the first branch found of those: `develop/master/main`
+There is the `--target` flag which is set to `smart` by default and diffs against the first branch found of those: `develop/master/main`. Pass any ref (`--target HEAD~2`, a branch, tag, ...) to diff against it explicitly, or `--target head` / `--target @` to review the uncommitted working-copy changes (falls back to the last commit when the working copy is clean).
 
 ```bash
 cargo install --path .
 
 code-reviewer git
 code-reviewer jj --prompt-file ~/vero/vero-code-review-prompt.md
-code-reviewer jj --head
+code-reviewer jj --target head
 
 # This requires the rg binary and runs `rg --files` from the repository root.
 # The regex matches against file paths *relative to the repository root* (e.g., src/main.rs).
@@ -21,13 +21,13 @@ code-reviewer jj --context-file-regex '^src/.*\.rs$'
 
 # Skip full-file content for big files (e.g. diaries, logs) without listing each with -i.
 # Files with MORE than N lines are shown as diff-only. Smaller files still get full content.
-code-reviewer git --head --diff-only-large-files 16000
+code-reviewer git --target head --diff-only-large-files 16000
 
 # Skip oversized per-file output for files whose diff and/or full content exceeds N
 # tokens; they stay listed, marked `(skipped: ~Xm tokens)`. Defaults to 1000000
 # (~1m): headroom above every common model context window, so real source is
 # never caught while multi-megabyte generated fixtures can't blow the prompt.
-code-reviewer git --head --skip-files-over-tokens 250000
+code-reviewer git --target head --skip-files-over-tokens 250000
 ```
 
 You can specify multiple `--context-file` flags to pass in other files for context.

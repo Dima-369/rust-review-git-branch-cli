@@ -10,14 +10,13 @@ use crate::fs::{build_review_data, get_repo_root, run_command};
 
 /// Fall back to using git operations when jj is not available.
 /// Maps jj args to equivalent git operations:
-///   - jj --head       => git --head (uncommitted/staged changes)
-///   - jj (smart)      => git (smart branch detection)
-///   - jj -b <target>  => git -b <target>
+///   - jj -b head / -b @  => git -b head / -b @ (uncommitted/staged changes)
+///   - jj (smart)         => git (smart branch detection)
+///   - jj -b <target>     => git -b <target>
 fn fallback_to_git(args: &JjArgs) -> Result<ReviewData> {
     let git_args = GitArgs {
         common: args.common.clone(),
         target: args.target.clone(),
-        head: args.head,
     };
 
     crate::git::extract_diff(&git_args)
@@ -82,11 +81,10 @@ fn get_diff_strategy(
     let mut diffs = HashMap::new();
     let context = args.common.context;
 
-    if args.head
-        || args
-            .target
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case("head") || t == "@")
+    if args
+        .target
+        .as_deref()
+        .is_some_and(|t| t.eq_ignore_ascii_case("head") || t == "@")
     {
         let files = get_jj_changed_files(None, &args.common.paths, repo_root)?;
         if files.is_empty() {

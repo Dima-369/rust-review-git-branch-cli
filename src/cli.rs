@@ -116,13 +116,11 @@ pub struct GitArgs {
     #[command(flatten)]
     pub common: CommonArgs,
 
-    /// Target ref to compare against: branch, tag, or commit (default: smart detection of develop/master/main)
-    #[arg(short = 'b', long, conflicts_with = "head")]
+    /// Target ref to compare against: branch, tag, or commit
+    /// (default: smart detection of develop/master/main; use `head` or `@`
+    /// to review uncommitted working-tree changes instead)
+    #[arg(short = 'b', long)]
     pub target: Option<String>,
-
-    /// Review only uncommitted changes (current working directory diff)
-    #[arg(long, default_value_t = false, conflicts_with = "target")]
-    pub head: bool,
 }
 
 #[derive(Args, Clone)]
@@ -130,13 +128,11 @@ pub struct JjArgs {
     #[command(flatten)]
     pub common: CommonArgs,
 
-    /// Target revision to compare against (default: smart detection of develop/master/main)
-    #[arg(short, long, conflicts_with = "head")]
+    /// Target revision to compare against
+    /// (default: smart detection of develop/master/main; use `head` or `@`
+    /// to review the current working revision instead)
+    #[arg(short, long)]
     pub target: Option<String>,
-
-    /// Review changes in the current working revision (@)
-    #[arg(long, default_value_t = false, conflicts_with = "target")]
-    pub head: bool,
 }
 
 pub fn get_default_ignore_patterns() -> Vec<String> {

@@ -33,11 +33,10 @@ fn get_diff_strategy(
     let mut diffs = HashMap::new();
     let context = args.common.context;
 
-    if args.head
-        || args
-            .target
-            .as_deref()
-            .is_some_and(|t| t.eq_ignore_ascii_case("head"))
+    if args
+        .target
+        .as_deref()
+        .is_some_and(|t| t.eq_ignore_ascii_case("head") || t == "@")
     {
         let has_head = head_exists(repo_root)?;
 

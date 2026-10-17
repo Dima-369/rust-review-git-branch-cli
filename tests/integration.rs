@@ -17,10 +17,10 @@ fn test_git_head_changes() {
     let mut file = fs::OpenOptions::new().append(true).open(file_path).unwrap();
     writeln!(file, "New line added").unwrap();
 
-    // Run tool with --head
+    // Run tool with --target head
     let mut cmd = code_reviewer_cmd();
     cmd.current_dir(root)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .assert()
         .success()
         .stdout(predicates::str::contains("diff --git"))
@@ -49,7 +49,7 @@ fn test_git_head_with_untracked_nested_repo() {
 
     let mut cmd = code_reviewer_cmd();
     cmd.current_dir(root)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .assert()
         .success()
         .stdout(predicates::str::contains("data/"))
@@ -111,7 +111,7 @@ fn test_git_subdirectory_execution() {
     // Run code-reviewer FROM THE SUBDIRECTORY
     let mut cmd = code_reviewer_cmd();
     cmd.current_dir(&subdir)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .assert()
         .success()
         .stdout(predicates::str::contains("subdir/new.rs")); // Should correctly resolve path
@@ -151,7 +151,8 @@ fn test_git_context_file() {
     cmd.current_dir(root)
         .args([
             "git",
-            "--head",
+            "--target",
+            "head",
             "--context-file",
             "context.txt",
             "--no-copy-to-clipboard",
@@ -281,10 +282,10 @@ fn test_git_ignore_file_default_patterns() {
         .output()
         .unwrap();
 
-    // Run tool with --head - Cargo.lock should be ignored by default
+    // Run tool with --target head - Cargo.lock should be ignored by default
     let mut cmd = code_reviewer_cmd();
     cmd.current_dir(root)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .assert()
         .success()
         .stdout(predicates::str::contains("test.rs")) // Should contain test.rs
@@ -321,7 +322,8 @@ fn test_git_ignore_file_custom_pattern() {
     cmd.current_dir(root)
         .args([
             "git",
-            "--head",
+            "--target",
+            "head",
             "--no-copy-to-clipboard",
             "--ignore-file",
             "custom_ignore.txt",
@@ -370,7 +372,8 @@ fn test_git_ignore_file_combined_patterns() {
     cmd.current_dir(root)
         .args([
             "git",
-            "--head",
+            "--target",
+            "head",
             "--no-copy-to-clipboard",
             "--ignore-file",
             "custom.txt",
@@ -413,7 +416,7 @@ fn test_skip_files_over_tokens() {
     // Without the flag: big.txt gets full content.
     let mut cmd = code_reviewer_cmd();
     cmd.current_dir(root)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .assert()
         .success()
         .stdout(predicates::str::contains(">>>> big.txt\n")) // full content included
@@ -425,7 +428,8 @@ fn test_skip_files_over_tokens() {
     cmd.current_dir(root)
         .args([
             "git",
-            "--head",
+            "--target",
+            "head",
             "--no-copy-to-clipboard",
             "--skip-files-over-tokens",
             "100",
@@ -469,7 +473,8 @@ fn test_skip_files_over_tokens_takes_priority_over_diff_only_large() {
     cmd.current_dir(root)
         .args([
             "git",
-            "--head",
+            "--target",
+            "head",
             "--no-copy-to-clipboard",
             "--diff-only-large-files",
             "5",
@@ -511,7 +516,8 @@ fn test_skip_files_over_tokens_applies_to_diffs_in_diff_only_mode() {
     cmd.current_dir(root)
         .args([
             "git",
-            "--head",
+            "--target",
+            "head",
             "--no-copy-to-clipboard",
             "--diff-only",
             "--skip-files-over-tokens",

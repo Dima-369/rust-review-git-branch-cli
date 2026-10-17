@@ -21,12 +21,12 @@ fn test_new_file_full_contents_skipped_for_git_added_file() {
         .output()
         .unwrap();
 
-    // Run with --head (no --diff-only). The diff is a "new file" diff,
+    // Run with --target head (no --diff-only). The diff is a "new file" diff,
     // so "## Full File Contents" should NOT repeat the file.
     let mut cmd = code_reviewer_cmd();
     let output = cmd
         .current_dir(root)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .output()
         .expect("failed to run");
 
@@ -66,7 +66,7 @@ fn test_untracked_file_has_proper_diff_headers() {
 
     let mut cmd = code_reviewer_cmd();
     cmd.current_dir(root)
-        .args(["git", "--head", "--no-copy-to-clipboard"])
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
         .assert()
         .success()
         .stdout(predicates::str::contains("untracked.rs"))
