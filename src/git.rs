@@ -22,14 +22,46 @@ pub fn extract_diff(args: &GitArgs) -> Result<ReviewData> {
         }
     );
 
-    let (changed_files, diffs, diff_target) = get_diff_strategy(args, &repo_root)?;
-    build_review_data(changed_files, diffs, diff_target, &args.common, repo_root)
+    let strategy = get_diff_strategy(args, &repo_root)?;
+    let commits = match strategy.log_range.as_deref() {
+        Some(range) => get_commit_subjects(&[range], repo_root.as_path())?,
+        None => Vec::new(),
+    };
+    let base_commit = match strategy.base_rev.as_deref() {
+        Some(rev) => get_commit_subjects(&["-1", rev], repo_root.as_path())?
+            .into_iter()
+            .next(),
+        None => None,
+    };
+    let uncommitted_files = count_uncommitted_files(&args.common.paths, repo_root.as_path())?;
+    let mut data = build_review_data(
+        strategy.files,
+        strategy.diffs,
+        strategy.diff_target,
+        &args.common,
+        repo_root,
+    )?;
+    data.commits = commits;
+    data.base_commit = base_commit;
+    data.uncommitted_files = uncommitted_files;
+    data.uncommitted_included = strategy.uncommitted_included;
+    Ok(data)
 }
 
-fn get_diff_strategy(
-    args: &GitArgs,
-    repo_root: &std::path::Path,
-) -> Result<(Vec<String>, HashMap<String, String>, String)> {
+struct DiffStrategy {
+    files: Vec<String>,
+    diffs: HashMap<String, String>,
+    diff_target: String,
+    /// Revision range for `git log` listing the commits being reviewed
+    /// (None when reviewing only uncommitted changes).
+    log_range: Option<String>,
+    /// The commit the diff is taken against (shown for orientation).
+    base_rev: Option<String>,
+    /// Whether working-tree changes are part of the diff.
+    uncommitted_included: bool,
+}
+
+fn get_diff_strategy(args: &GitArgs, repo_root: &std::path::Path) -> Result<DiffStrategy> {
     let mut diffs = HashMap::new();
     let context = args.common.context;
 
@@ -38,6 +70,11 @@ fn get_diff_strategy(
         .as_deref()
         .is_some_and(|t| t.eq_ignore_ascii_case("head") || t == "@")
     {
+        if args.exclude_uncommitted {
+            crate::print_warning(
+                "--exclude-uncommitted has no effect with --target head (it reviews uncommitted changes).",
+            );
+        }
         let has_head = head_exists(repo_root)?;
 
         let mut files = if has_head {
@@ -53,12 +90,23 @@ fn get_diff_strategy(
             }
 
             // No uncommitted changes — fall back to the parent commit, like jj does
-            let (diff_range, target_name) = if parent_exists(repo_root)? {
-                ("HEAD~1..HEAD".to_string(), "HEAD~1")
+            // `git log` can't take a tree as a range start, so the log range is separate.
+            let (diff_range, log_range, target_name, base_rev) = if parent_exists(repo_root)? {
+                (
+                    "HEAD~1..HEAD".to_string(),
+                    "HEAD~1..HEAD".to_string(),
+                    "HEAD~1",
+                    Some("HEAD~1".to_string()),
+                )
             } else {
                 // Empty tree hash to support reviewing the initial commit
                 let empty_tree = get_empty_tree_hash(repo_root)?;
-                (format!("{empty_tree}..HEAD"), "initial commit")
+                (
+                    format!("{empty_tree}..HEAD"),
+                    "HEAD".to_string(),
+                    "initial commit",
+                    None,
+                )
             };
 
             let parent_files =
@@ -74,44 +122,29 @@ fn get_diff_strategy(
                 diffs.insert(file.clone(), diff);
             }
 
-            return Ok((parent_files, diffs, target_name.to_string()));
+            return Ok(DiffStrategy {
+                files: parent_files,
+                diffs,
+                diff_target: target_name.to_string(),
+                log_range: Some(log_range),
+                base_rev,
+                uncommitted_included: false,
+            });
         }
 
         let untracked_set: HashSet<String> = untracked.iter().cloned().collect();
         files.extend(untracked);
+        let base = has_head.then_some("HEAD");
+        let diffs = collect_diffs(&files, &untracked_set, base, context, repo_root)?;
 
-        for file in &files {
-            if untracked_set.contains(file) || !has_head {
-                let full_path = repo_root.join(file);
-                match get_local_file_content(&full_path)? {
-                    FileContent::Binary => {
-                        diffs.insert(file.clone(), "Binary file".to_string());
-                    }
-                    FileContent::Deleted => {
-                        diffs.insert(file.clone(), String::new());
-                    }
-                    content @ FileContent::Directory => {
-                        // Untracked nested repo (e.g. a submodule git init'd but
-                        // not yet registered) — git reports it as a single path
-                        // ending in '/' rather than expanding its contents.
-                        log::warn!(
-                            "Skipping '{}': untracked directory (likely a nested/submodule repo)",
-                            full_path.display()
-                        );
-                        diffs.insert(file.clone(), content.to_display_string());
-                    }
-                    FileContent::Content(_) => {
-                        let diff = get_no_index_new_file_diff(repo_root, file, context)?;
-                        diffs.insert(file.clone(), diff);
-                    }
-                }
-            } else {
-                let diff = get_git_diff(&["HEAD"], file, context, repo_root)?;
-                diffs.insert(file.clone(), diff);
-            }
-        }
-
-        Ok((files, diffs, "HEAD".to_string()))
+        Ok(DiffStrategy {
+            files,
+            diffs,
+            diff_target: "HEAD".to_string(),
+            log_range: None,
+            base_rev: has_head.then(|| "HEAD".to_string()),
+            uncommitted_included: true,
+        })
     } else {
         let current_branch = get_current_git_branch(repo_root)?;
 
@@ -130,19 +163,137 @@ fn get_diff_strategy(
             bail!("Already on target ref '{target_ref}'. Nothing to compare.");
         }
 
-        let diff_range = format!("{target_ref}...");
-        let files = get_git_changed_files(&[&diff_range], &args.common.paths, repo_root)?;
+        let merge_base = get_merge_base(&target_ref, repo_root)?;
+
+        // Default: merge-base -> working tree (committed + uncommitted + untracked).
+        // With --exclude-uncommitted (or if no merge-base), committed changes only.
+        let (files, diffs, uncommitted_included) = match merge_base.as_deref() {
+            Some(base) if !args.exclude_uncommitted => {
+                let mut files = get_git_changed_files(&[base], &args.common.paths, repo_root)?;
+                let untracked = get_untracked_files(&args.common.paths, repo_root)?;
+                let untracked_set: HashSet<String> = untracked.iter().cloned().collect();
+                files.extend(untracked);
+                let diffs = collect_diffs(&files, &untracked_set, Some(base), context, repo_root)?;
+                (files, diffs, true)
+            }
+            _ => {
+                let diff_range = format!("{target_ref}...");
+                let files = get_git_changed_files(&[&diff_range], &args.common.paths, repo_root)?;
+                let mut diffs = HashMap::new();
+                for file in &files {
+                    let diff = get_git_diff(&[diff_range.as_str()], file, context, repo_root)?;
+                    diffs.insert(file.clone(), diff);
+                }
+                (files, diffs, false)
+            }
+        };
         if files.is_empty() {
             bail!("No changes found compared to '{target_ref}'");
         }
 
-        for file in &files {
-            let diff = get_git_diff(&[diff_range.as_str()], file, context, repo_root)?;
+        Ok(DiffStrategy {
+            files,
+            diffs,
+            diff_target,
+            log_range: Some(format!("{target_ref}..HEAD")),
+            base_rev: merge_base,
+            uncommitted_included,
+        })
+    }
+}
+
+/// List commits for the given `git log` args as "<short-hash> <subject>", newest first.
+fn get_commit_subjects(log_args: &[&str], repo_root: &std::path::Path) -> Result<Vec<String>> {
+    let mut cmd = Command::new("git");
+    cmd.args(["log", "--no-color", "--format=%h %s"])
+        .args(log_args)
+        .current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        // Non-fatal: the commit list is informational only.
+        log::debug!(
+            "git log {log_args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return Ok(Vec::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect())
+}
+
+/// Diff each file against `base` (working tree side). Untracked files, or all
+/// files when there is no base commit yet, are rendered as new-file diffs.
+fn collect_diffs(
+    files: &[String],
+    untracked: &HashSet<String>,
+    base: Option<&str>,
+    context: Option<u32>,
+    repo_root: &std::path::Path,
+) -> Result<HashMap<String, String>> {
+    let mut diffs = HashMap::new();
+
+    for file in files {
+        if untracked.contains(file) || base.is_none() {
+            let full_path = repo_root.join(file);
+            match get_local_file_content(&full_path)? {
+                FileContent::Binary => {
+                    diffs.insert(file.clone(), "Binary file".to_string());
+                }
+                FileContent::Deleted => {
+                    diffs.insert(file.clone(), String::new());
+                }
+                content @ FileContent::Directory => {
+                    // Untracked nested repo (e.g. a submodule git init'd but
+                    // not yet registered) — git reports it as a single path
+                    // ending in '/' rather than expanding its contents.
+                    log::warn!(
+                        "Skipping '{}': untracked directory (likely a nested/submodule repo)",
+                        full_path.display()
+                    );
+                    diffs.insert(file.clone(), content.to_display_string());
+                }
+                FileContent::Content(_) => {
+                    let diff = get_no_index_new_file_diff(repo_root, file, context)?;
+                    diffs.insert(file.clone(), diff);
+                }
+            }
+        } else if let Some(base) = base {
+            let diff = get_git_diff(&[base], file, context, repo_root)?;
             diffs.insert(file.clone(), diff);
         }
-
-        Ok((files, diffs, diff_target))
     }
+
+    Ok(diffs)
+}
+
+/// Merge-base of `target` and HEAD, i.e. what `git diff <target>...` diffs against.
+fn get_merge_base(target: &str, repo_root: &std::path::Path) -> Result<Option<String>> {
+    let mut cmd = Command::new("git");
+    cmd.args(["merge-base", target, "HEAD"])
+        .current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8(output.stdout)?.trim().to_string()))
+}
+
+/// Number of files with uncommitted changes (staged, unstaged, or untracked),
+/// scoped to `paths` when given so the count matches the reviewed files.
+fn count_uncommitted_files(paths: &[String], repo_root: &std::path::Path) -> Result<usize> {
+    let mut cmd = Command::new("git");
+    cmd.args(["status", "--porcelain"]);
+    if !paths.is_empty() {
+        cmd.arg("--").args(paths);
+    }
+    cmd.current_dir(repo_root);
+    let output = run_command(&mut cmd)?;
+    if !output.status.success() {
+        return Ok(0);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).lines().count())
 }
 
 fn get_current_git_branch(repo_root: &std::path::Path) -> Result<String> {

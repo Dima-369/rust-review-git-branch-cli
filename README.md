@@ -3,7 +3,7 @@ Supports both `jj` and `git`.
 It writes to stdout and copies to clipboard by default.
 The output includes the diff of files and the full file content for context.
 
-There is the `--target` flag which is set to `smart` by default and diffs against the first branch found of those: `develop/master/main`. Pass any ref (`--target HEAD~2`, a branch, tag, ...) to diff against it explicitly, or `--target head` / `--target @` to review the uncommitted working-copy changes (falls back to the last commit when the working copy is clean).
+There is the `--target` flag which is set to `smart` by default and diffs against the first branch found of those: `develop/master/main`. Pass any ref (`--target HEAD~2`, a branch, tag, ...) to diff against it explicitly, or `--target head` / `--target @` to review the uncommitted working-copy changes (falls back to the last commit when the working copy is clean). When diffing against a ref, uncommitted and untracked changes are included by default; pass `--exclude-uncommitted` to review committed changes only. The output starts with the reviewed commits (newest first), the base commit, and whether uncommitted changes are part of the diff.
 
 ```bash
 cargo install --path .

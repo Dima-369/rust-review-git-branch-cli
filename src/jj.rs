@@ -17,6 +17,7 @@ fn fallback_to_git(args: &JjArgs) -> Result<ReviewData> {
     let git_args = GitArgs {
         common: args.common.clone(),
         target: args.target.clone(),
+        exclude_uncommitted: false,
     };
 
     crate::git::extract_diff(&git_args)

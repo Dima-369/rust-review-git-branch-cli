@@ -121,6 +121,11 @@ pub struct GitArgs {
     /// to review uncommitted working-tree changes instead)
     #[arg(short = 'b', long)]
     pub target: Option<String>,
+
+    /// When comparing against a ref, review committed changes only and leave
+    /// out uncommitted/untracked working-tree changes (included by default)
+    #[arg(long)]
+    pub exclude_uncommitted: bool,
 }
 
 #[derive(Args, Clone)]

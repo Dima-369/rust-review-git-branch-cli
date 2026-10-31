@@ -644,6 +644,10 @@ pub fn build_review_data(
         diffs,
         context_files: validated_context_files,
         repo_root,
+        commits: Vec::new(),
+        base_commit: None,
+        uncommitted_files: 0,
+        uncommitted_included: false,
     })
 }
 

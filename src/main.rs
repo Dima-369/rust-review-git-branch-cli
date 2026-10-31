@@ -96,6 +96,8 @@ fn print_stats(
     large_files_diff_only: &[(String, usize)],
     skipped_files_tokens: &[(String, usize)],
 ) {
+    print_commits(review_data);
+
     // Trimmed files are annotated inline in the changed-files list, mirroring
     // how context files already get a `(context file)` suffix. Lists are tiny,
     // so a linear scan beats a HashMap alloc. Both vecs clone their paths
@@ -144,6 +146,61 @@ fn print_stats(
     );
 }
 
+const MAX_COMMITS_SHOWN: usize = 10;
+const MAX_COMMIT_LINE_CHARS: usize = 80;
+
+/// Print what the diff covers, newest first: uncommitted changes, then the
+/// commits, then the base commit in gray, so it's easy to verify the right
+/// range was picked.
+fn print_commits(review_data: &crate::domain::ReviewData) {
+    let commits = &review_data.commits;
+    let mut printed = false;
+
+    let n = review_data.uncommitted_files;
+    if n > 0 {
+        let files = if n == 1 { "file" } else { "files" };
+        let msg = match (review_data.uncommitted_included, commits.is_empty()) {
+            (true, true) => format!("uncommitted changes only ({n} {files})"),
+            (true, false) => format!("+ uncommitted changes ({n} {files})"),
+            (false, _) => format!("uncommitted changes NOT included ({n} {files})"),
+        };
+        println!("  {}", msg.dimmed());
+        printed = true;
+    }
+    for commit in commits.iter().take(MAX_COMMITS_SHOWN) {
+        let line = truncate_chars(commit, MAX_COMMIT_LINE_CHARS);
+        match line.split_once(' ') {
+            Some((hash, subject)) => println!("  {} {subject}", hash.yellow()),
+            None => println!("  {line}"),
+        }
+        printed = true;
+    }
+    if commits.len() > MAX_COMMITS_SHOWN {
+        println!(
+            "  {}",
+            format!("... and {} more", commits.len() - MAX_COMMITS_SHOWN).dimmed()
+        );
+    }
+    if let Some(base) = &review_data.base_commit {
+        // "base " prefix eats 5 chars of the 80-char budget.
+        let line = truncate_chars(base, MAX_COMMIT_LINE_CHARS - 5);
+        println!("  {}", format!("base {line}").dimmed());
+        printed = true;
+    }
+    if printed {
+        println!();
+    }
+}
+
+/// Truncate `s` to at most `max` chars, ending with "..." when cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().nth(max).is_none() {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(max.saturating_sub(3)).collect();
+    format!("{}...", kept.trim_end())
+}
+
 /// Handle output to stdout or clipboard
 fn handle_output(
     result: prompt::PromptResult,
@@ -164,4 +221,28 @@ fn handle_output(
         println!("{}", result.prompt);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_chars;
+
+    #[test]
+    fn truncate_keeps_short_lines() {
+        assert_eq!(truncate_chars("abc1234 fix bug", 80), "abc1234 fix bug");
+    }
+
+    #[test]
+    fn truncate_cuts_long_lines_with_ellipsis() {
+        let long = "x".repeat(100);
+        let out = truncate_chars(&long, 80);
+        assert_eq!(out.chars().count(), 80);
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_is_char_boundary_safe() {
+        let long = "ü".repeat(100);
+        assert_eq!(truncate_chars(&long, 80).chars().count(), 80);
+    }
 }
