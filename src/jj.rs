@@ -6,7 +6,7 @@ use crate::cli::{GitArgs, JjArgs};
 use crate::domain::ReviewData;
 use std::path::Path;
 
-use crate::fs::{build_review_data, get_repo_root, run_command};
+use crate::fs::{build_review_data, get_repo_root, run_command, validate_path_args};
 
 /// Fall back to using git operations when jj is not available.
 /// Maps jj args to equivalent git operations:
@@ -33,7 +33,13 @@ fn try_jj_or_fallback(args: &JjArgs, repo_root: &Path) -> Result<ReviewData> {
     {
         Ok(output) if output.status.success() => {
             // jj repo exists, proceed with jj operations
-            let (changed_files, diffs, diff_target) = get_diff_strategy(args, repo_root)?;
+            let (changed_files, diffs, diff_target) = validate_path_args(
+                get_diff_strategy(args, repo_root),
+                |s| s.0.as_slice(),
+                &args.common.paths,
+                repo_root,
+                || list_jj_files(repo_root),
+            )?;
             return build_review_data(
                 changed_files,
                 diffs,
@@ -152,6 +158,19 @@ fn detect_smart_jj_revision(repo_root: &Path) -> Result<String> {
         "No suitable base revision found with changes. Checked: {}",
         candidates.join(", ")
     );
+}
+
+/// Files tracked in the working copy, used for "did you mean" hints.
+fn list_jj_files(repo_root: &Path) -> Vec<String> {
+    let mut cmd = Command::new("jj");
+    cmd.args(["file", "list"]).current_dir(repo_root);
+    match run_command(&mut cmd) {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn get_jj_changed_files(

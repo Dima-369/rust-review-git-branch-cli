@@ -610,6 +610,178 @@ pub fn filter_ignored_files(files: Vec<String>, matcher: &IgnoreMatcher) -> Vec<
         .collect()
 }
 
+/// A git pathspec with magic (`:(glob)x`, `:!x`) or a jj fileset expression
+/// (`glob:"x"`, `root:x`). A one-letter prefix is a Windows drive, not a kind.
+fn is_vcs_expression(arg: &str) -> bool {
+    arg.starts_with(':')
+        || arg.split_once(':').is_some_and(|(kind, _)| {
+            kind.len() > 1
+                && kind
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+/// How a single path argument selects changed files (repo-root-relative).
+enum PathArg {
+    /// Evaluated by git/jj only; we can't tell what it matches.
+    Expression,
+    Glob(globset::GlobMatcher),
+    /// Literal file or directory; empty means the whole repo.
+    Literal(String),
+    /// Absolute path outside the repo root.
+    OutsideRepo,
+}
+
+impl PathArg {
+    fn parse(arg: &str, repo_root: &Path) -> Self {
+        if is_vcs_expression(arg) {
+            return Self::Expression;
+        }
+        let path = Path::new(arg);
+        let rel = if path.is_absolute() {
+            let canonical_root = repo_root.canonicalize().ok();
+            match path.strip_prefix(repo_root).ok().or_else(|| {
+                canonical_root
+                    .as_deref()
+                    .and_then(|root| path.strip_prefix(root).ok())
+            }) {
+                Some(rel) => rel.to_path_buf(),
+                None => return Self::OutsideRepo,
+            }
+        } else {
+            path.to_path_buf()
+        };
+        let mut cleaned = rel.clean().to_string_lossy().into_owned();
+        if cfg!(windows) {
+            cleaned = cleaned.replace('\\', "/");
+        }
+        let normalized = if cleaned == "." {
+            String::new()
+        } else {
+            cleaned.trim_end_matches('/').to_string()
+        };
+        if normalized.contains(['*', '?', '[']) {
+            match globset::Glob::new(&normalized) {
+                Ok(glob) => Self::Glob(glob.compile_matcher()),
+                Err(_) => Self::Expression,
+            }
+        } else {
+            Self::Literal(normalized)
+        }
+    }
+
+    /// Mirrors git pathspec semantics: exact file, directory prefix, or glob
+    /// (where `*` also crosses `/`).
+    fn matches(&self, file: &str) -> bool {
+        match self {
+            Self::Expression => true,
+            Self::OutsideRepo => false,
+            Self::Glob(matcher) => matcher.is_match(file),
+            Self::Literal(path) => {
+                path.is_empty()
+                    || file == path
+                    || file
+                        .strip_prefix(path.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            }
+        }
+    }
+}
+
+/// Paths from `candidates` with the same file name as `arg`, as "did you mean" hints.
+fn suggest_paths(arg: &str, candidates: &[String]) -> Vec<String> {
+    let Some(name) = Path::new(arg).file_name() else {
+        return Vec::new();
+    };
+    candidates
+        .iter()
+        .filter(|c| Path::new(c).file_name() == Some(name))
+        .take(5)
+        .cloned()
+        .collect()
+}
+
+/// Validate path arguments against the outcome of the diff, so a typo'd path
+/// isn't silently dropped from the review.
+///
+/// Paths that don't exist (or lie outside the repo) are an error, with "did
+/// you mean" hints from `list_repo_files`. Existing paths or globs that
+/// selected no changed file only produce a warning. If the diff itself failed,
+/// only missing paths are reported (attached to the original error), since an
+/// unrelated VCS error says nothing about which paths have changes.
+pub fn validate_path_args<T>(
+    diff: Result<T>,
+    changed_files: impl Fn(&T) -> &[String],
+    paths: &[String],
+    repo_root: &Path,
+    list_repo_files: impl FnOnce() -> Vec<String>,
+) -> Result<T> {
+    let files = diff.as_ref().map_or(&[][..], &changed_files);
+    let mut missing = Vec::new();
+    for arg in paths {
+        let parsed = PathArg::parse(arg, repo_root);
+        if files.iter().any(|f| parsed.matches(f)) {
+            continue;
+        }
+        match &parsed {
+            PathArg::Expression => {}
+            PathArg::OutsideRepo => missing.push((arg, true)),
+            PathArg::Literal(rel) if repo_root.join(rel).symlink_metadata().is_err() => {
+                missing.push((arg, false));
+            }
+            PathArg::Glob(_) if diff.is_ok() => {
+                crate::print_warning(&format!("Pattern '{arg}' matched no changed files."));
+            }
+            PathArg::Literal(_) if diff.is_ok() => {
+                crate::print_warning(&format!("'{arg}' has no changes, skipping it."));
+            }
+            _ => {}
+        }
+    }
+    if missing.is_empty() {
+        return diff;
+    }
+
+    let candidates = list_repo_files();
+    let cwd = std::env::current_dir().ok();
+    let mut msg = String::from("Path argument(s) not found:");
+    for (arg, outside) in missing {
+        if outside {
+            msg.push_str(&format!(
+                "\n  '{arg}' is outside the repo root {}",
+                repo_root.display()
+            ));
+            continue;
+        }
+        msg.push_str(&format!(
+            "\n  '{arg}' does not exist (paths are relative to the repo root {})",
+            repo_root.display()
+        ));
+        let mut hints = Vec::new();
+        // Common mistake: a path relative to the current subdirectory.
+        if let Some(cwd) = &cwd
+            && cwd.join(arg).exists()
+            && let Some(rel) = pathdiff::diff_paths(cwd.join(arg).clean(), repo_root)
+            && !rel.starts_with("..")
+        {
+            hints.push(rel.to_string_lossy().into_owned());
+        }
+        for s in suggest_paths(arg, &candidates) {
+            if !hints.contains(&s) {
+                hints.push(s);
+            }
+        }
+        for hint in hints {
+            msg.push_str(&format!("\n      did you mean: {hint}"));
+        }
+    }
+    match diff {
+        Ok(_) => bail!(msg),
+        Err(e) => Err(e.context(msg)),
+    }
+}
+
 /// Build ReviewData from diff results and common args
 /// This consolidates the shared logic between git and jj extract_diff functions
 pub fn build_review_data(
@@ -656,6 +828,55 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn arg_matches(arg: &str, file: &str) -> bool {
+        PathArg::parse(arg, Path::new("/repo")).matches(file)
+    }
+
+    #[test]
+    fn test_path_arg_matches() {
+        assert!(arg_matches("src/main.rs", "src/main.rs"));
+        assert!(arg_matches("./src/main.rs", "src/main.rs"));
+        assert!(arg_matches("/repo/src/main.rs", "src/main.rs"));
+        assert!(arg_matches("src", "src/main.rs"));
+        assert!(arg_matches("src/", "src/a/b.rs"));
+        assert!(arg_matches(".", "anything.rs"));
+        assert!(arg_matches("src/*.rs", "src/a/b.rs")); // git `*` crosses `/`
+        assert!(arg_matches("**/b.rs", "src/a/b.rs"));
+        assert!(arg_matches(":(glob)weird", "x.rs"));
+        assert!(arg_matches("glob:\"*.py\"", "x.rs"));
+
+        assert!(!arg_matches("main.rs", "src/main.rs"));
+        assert!(!arg_matches("sr", "src/main.rs"));
+        assert!(!arg_matches("src/*.py", "src/main.rs"));
+        assert!(!arg_matches("/elsewhere/main.rs", "main.rs"));
+    }
+
+    #[test]
+    fn test_path_arg_kinds() {
+        let root = Path::new("/repo");
+        assert!(matches!(
+            PathArg::parse("/etc/hosts", root),
+            PathArg::OutsideRepo
+        ));
+        // A drive letter is not a fileset kind.
+        assert!(!is_vcs_expression("C:/repo/src/main.rs"));
+        assert!(is_vcs_expression("root-glob:\"src/**\""));
+        assert!(is_vcs_expression(":!vendor"));
+    }
+
+    #[test]
+    fn test_suggest_paths_by_file_name() {
+        let candidates = vec![
+            "tests/test_a.py".to_string(),
+            "a.py".to_string(),
+            "other/test_a.py".to_string(),
+        ];
+        assert_eq!(
+            suggest_paths("test_a.py", &candidates),
+            vec!["tests/test_a.py", "other/test_a.py"]
+        );
+    }
 
     /// Build an IgnoreMatcher from string-literal patterns (test convenience).
     fn matcher(patterns: &[&str]) -> IgnoreMatcher {

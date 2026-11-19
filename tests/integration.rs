@@ -255,6 +255,148 @@ fn test_jj_specific_path_arg() {
         .stdout(predicates::str::contains("README.md").not()); // Should NOT contain readme
 }
 
+#[test]
+fn test_git_missing_path_arg_errors_with_suggestion() {
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    fs::create_dir(root.join("tests")).unwrap();
+    fs::write(root.join("app.py"), "print(1)\n").unwrap();
+    fs::write(root.join("tests/test_app.py"), "assert True\n").unwrap();
+
+    code_reviewer_cmd()
+        .current_dir(root)
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
+        .args(["app.py", "test_app.py"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("'test_app.py' does not exist"))
+        .stderr(predicates::str::contains("did you mean: tests/test_app.py"));
+}
+
+#[test]
+fn test_git_unchanged_path_arg_warns() {
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    fs::write(root.join("app.py"), "print(1)\n").unwrap();
+
+    code_reviewer_cmd()
+        .current_dir(root)
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
+        .args(["app.py", "README.md"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains("'README.md' has no changes"))
+        .stdout(predicates::str::contains("app.py"));
+}
+
+#[test]
+fn test_git_subdir_relative_path_arg_hint() {
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/mod.py"), "x = 1\n").unwrap();
+
+    // Paths are repo-root-relative, so `mod.py` from inside `pkg/` is wrong.
+    code_reviewer_cmd()
+        .current_dir(root.join("pkg"))
+        .args([
+            "git",
+            "--target",
+            "head",
+            "--no-copy-to-clipboard",
+            "mod.py",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("'mod.py' does not exist"))
+        .stderr(predicates::str::contains("did you mean: pkg/mod.py"));
+}
+
+#[test]
+fn test_git_glob_path_arg_without_matches_warns() {
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    fs::write(root.join("app.py"), "print(1)\n").unwrap();
+
+    code_reviewer_cmd()
+        .current_dir(root)
+        .args(["git", "--target", "head", "--no-copy-to-clipboard"])
+        .args(["app.py", "*.rs"])
+        .assert()
+        .success()
+        .stderr(predicates::str::contains(
+            "Pattern '*.rs' matched no changed files",
+        ));
+}
+
+#[test]
+fn test_git_vcs_error_not_masked_by_path_warnings() {
+    let temp = setup_git_repo();
+    let root = temp.path();
+
+    let branch = String::from_utf8(
+        std::process::Command::new("git")
+            .args(["branch", "--show-current"])
+            .current_dir(root)
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+
+    // Existing path + VCS error: report the VCS error, no "no changes" warning.
+    code_reviewer_cmd()
+        .current_dir(root)
+        .args(["git", "--target", branch.trim(), "--no-copy-to-clipboard"])
+        .arg("README.md")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("Already on target ref"))
+        .stderr(predicates::str::contains("has no changes").not());
+
+    // Missing path + VCS error: both are reported.
+    code_reviewer_cmd()
+        .current_dir(root)
+        .args(["git", "--target", branch.trim(), "--no-copy-to-clipboard"])
+        .arg("nope.rs")
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("'nope.rs' does not exist"))
+        .stderr(predicates::str::contains("Already on target ref"));
+}
+
+#[test]
+fn test_jj_missing_path_arg_errors_with_suggestion() {
+    if std::process::Command::new("jj")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+
+    let temp = setup_jj_repo();
+    let root = temp.path();
+
+    let mut f = fs::OpenOptions::new()
+        .append(true)
+        .open(root.join("src/lib.rs"))
+        .unwrap();
+    writeln!(f, "// change").unwrap();
+
+    code_reviewer_cmd()
+        .current_dir(root)
+        .args(["jj", "--target", "@", "--no-copy-to-clipboard", "lib.rs"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("'lib.rs' does not exist"))
+        .stderr(predicates::str::contains("did you mean: src/lib.rs"));
+}
+
 // --- Ignore File Tests ---
 
 #[test]

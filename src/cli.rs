@@ -98,8 +98,7 @@ pub struct CommonArgs {
     #[arg(short = 'i', long = "ignore-file", value_name = "PATH_PATTERN")]
     pub ignore_files: Vec<String>,
 
-    /// Specific files or directories to review
-    #[arg(trailing_var_arg = true)]
+    /// Specific files or directories to review (relative to the repo root)
     pub paths: Vec<String>,
 
     /// Print executed shell commands for debugging

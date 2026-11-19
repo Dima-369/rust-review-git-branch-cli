@@ -7,6 +7,7 @@ use crate::cli::GitArgs;
 use crate::domain::ReviewData;
 use crate::fs::{
     FileContent, build_review_data, get_local_file_content, get_repo_root, run_command,
+    validate_path_args,
 };
 
 pub fn extract_diff(args: &GitArgs) -> Result<ReviewData> {
@@ -22,7 +23,15 @@ pub fn extract_diff(args: &GitArgs) -> Result<ReviewData> {
         }
     );
 
-    let strategy = get_diff_strategy(args, &repo_root)?;
+    // Validate path args even when the diff came up empty: a typo'd path is a
+    // better explanation than "no changes found".
+    let strategy = validate_path_args(
+        get_diff_strategy(args, &repo_root),
+        |s| s.files.as_slice(),
+        &args.common.paths,
+        &repo_root,
+        || list_repo_files(&repo_root),
+    )?;
     let commits = match strategy.log_range.as_deref() {
         Some(range) => get_commit_subjects(&[range], repo_root.as_path())?,
         None => Vec::new(),
@@ -278,6 +287,20 @@ fn get_merge_base(target: &str, repo_root: &std::path::Path) -> Result<Option<St
         return Ok(None);
     }
     Ok(Some(String::from_utf8(output.stdout)?.trim().to_string()))
+}
+
+/// Tracked and untracked (non-ignored) files, used for "did you mean" hints.
+fn list_repo_files(repo_root: &std::path::Path) -> Vec<String> {
+    let mut cmd = Command::new("git");
+    cmd.args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .current_dir(repo_root);
+    match run_command(&mut cmd) {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Number of files with uncommitted changes (staged, unstaged, or untracked),
